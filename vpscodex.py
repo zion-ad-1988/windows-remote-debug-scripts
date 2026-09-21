@@ -29,7 +29,7 @@ except Exception as exc:
     print(f"原始错误: {exc}", flush=True)
     raise SystemExit(1)
 
-URL = "https://home.kuniaovps.com/i/remote/1
+URL = "https://home.kuniaovps.com/i/remote/1"
 PASSWORD = ""
 RDP_FILE_PATH = r"C:\Users\Administrator\Desktop\UK Play.rdp"
 POLL_INTERVAL_SECONDS = 60
@@ -49,7 +49,9 @@ STATUS_SELECTOR = (
 
 
 def clear_screen() -> None:
-    os.system("cls" if os.name == "nt" else "clear")
+    # 不调用 os.system("cls")，避免后台运行时周期性创建可见 cmd 窗口。
+    sys.stdout.write("\x1b[2J\x1b[H")
+    sys.stdout.flush()
 
 
 def log(message: str = "") -> None:

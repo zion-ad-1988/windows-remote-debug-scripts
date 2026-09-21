@@ -486,7 +486,10 @@ class ModernPanel(tk.Frame):
                 startupinfo = subprocess.STARTUPINFO()
                 startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
                 startupinfo.wShowWindow = 0  # SW_HIDE
-                creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+                creationflags = (
+                    subprocess.CREATE_NEW_PROCESS_GROUP
+                    | subprocess.CREATE_NO_WINDOW
+                )
 
             self.process = subprocess.Popen(
                 self.cmd_list,
@@ -595,7 +598,8 @@ class ModernPanel(tk.Frame):
                 subprocess.run(
                     ["taskkill", "/F", "/T", "/PID", str(self.process.pid)],
                     stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
+                    stderr=subprocess.DEVNULL,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
                 )
             else:
                 self.process.terminate()
@@ -615,7 +619,8 @@ class ModernPanel(tk.Frame):
                     subprocess.run(
                         ["taskkill", "/F", "/T", "/PID", str(self.process.pid)],
                         stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL
+                        stderr=subprocess.DEVNULL,
+                        creationflags=subprocess.CREATE_NO_WINDOW,
                     )
                 else:
                     self.process.terminate()
@@ -643,6 +648,7 @@ Get-CimInstance Win32_Process | Where-Object {{
             ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", clean_ps],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW,
             timeout=5
         )
     except Exception:

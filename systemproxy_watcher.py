@@ -198,7 +198,8 @@ def write_at(row: int, text: str = ""):
 
 
 def render_static_screen():
-    os.system("cls")
+    # 直接发送 ANSI 清屏序列，避免后台运行时创建 cmd 窗口。
+    sys.stdout.write("\x1b[2J\x1b[H")
     sys.stdout.write(f"系统代理监控已启动 (间隔 {CHECK_INTERVAL}s)\n")
     sys.stdout.write("\n")
     sys.stdout.write(f"按 Ctrl+C 停止\n")

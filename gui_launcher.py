@@ -1,16 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-现代化暗黑风格多脚本集成管理控制台
-具备：
+现代化暗黑风格多脚本集成管理控制台 (Nexus Control Studio)
+UI/UX Pro Max 规范重构版：
 - 沉浸式暗黑 Windows 标题栏（DWM 注入）
-- VS Code / Linear 风格现代化配色（深空灰、霓虹绿、科技蓝、亚光边框）
-- 圆角平滑科技感控制按钮与状态呼吸指示灯
-- 独立虚拟终端缓冲区（原生支持 ANSI 光标重绘与 \\r 就地刷新）
-- 模块化面板卡片设计，支持快捷动作胶囊与内联发送框
+- Tailwind Slate / Linear 风格现代深色调色板
+- 矢量平滑圆角按钮（内置 Hand 光标、悬停平滑反馈与点击态）
+- 柔光呼吸状态徽章（支持 运行中 / 已停止 / 异常 实时展示）
+- 模块化面板卡片，带服务标识徽标、快捷控制胶囊与终端流式缓冲区
+- 底部状态栏支持管理员特权检测、全局快捷键提示与实时时钟
 """
 
 import sys
 import os
+import time
 import queue
 import threading
 import subprocess
@@ -26,27 +28,32 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # 现代极简暗黑主题调色板 (Tailwind Slate / Dark Mode Palette)
 THEME = {
-    "bg_main": "#0f172a",         # 主背景 Slate 900
-    "bg_card": "#1e293b",         # 卡片/面板背景 Slate 800
-    "bg_card_inner": "#090d16",   # 终端内背景 Deep Dark
-    "border_card": "#334155",     # 卡片边框 Slate 700
-    "border_light": "#475569",    # 悬浮边框 Slate 600
-    "text_main": "#f8fafc",       # 主标题/文字 Slate 50
-    "text_sub": "#94a3b8",        # 副标题/描述 Slate 400
-    "text_dim": "#64748b",        # 次要提示 Slate 500
-    "terminal_text": "#e2e8f0",   # 控制台字符浅亮白
-    "accent_blue": "#38bdf8",     # 天蓝高亮 Sky 400
+    "bg_main": "#0b0f19",          # 主窗口最深底色
+    "bg_navbar": "#0f172a",        # 顶部导航栏背景
+    "bg_card": "#161f30",          # 卡片/面板背景
+    "bg_card_header": "#1a253a",   # 卡片头部背景
+    "bg_card_inner": "#070b14",    # 终端内背景 Deep Dark
+    "border_card": "#26334d",      # 卡片边框
+    "border_light": "#3e517a",     # 悬浮与激活边框
+    "border_subtle": "#1e293b",    # 次要分隔线
+    "text_main": "#f8fafc",        # 主文字亮白
+    "text_sub": "#94a3b8",         # 副标题/说明文字
+    "text_dim": "#64748b",         # 次要提示/暗色文字
+    "terminal_text": "#e2e8f0",    # 控制台亮白
+    "accent_blue": "#38bdf8",      # 天蓝高亮 Sky 400
     "accent_blue_hover": "#0284c7",
-    "accent_green": "#10b981",    # 运行绿 Emerald 500
+    "accent_green": "#10b981",     # 运行绿 Emerald 500
     "accent_green_hover": "#059669",
-    "accent_red": "#ef4444",      # 危险/停止红 Red 500
-    "accent_red_hover": "#dc2626",
-    "accent_amber": "#f59e0b",    # 警告琥珀色 Amber 500
-    "btn_bg": "#334155",          # 普通按键底色
-    "btn_hover": "#475569",       # 按键悬停
-    "btn_active": "#1e293b",      # 按键激活
-    "btn_pill_bg": "#1e293b",     # 快捷标签底色
-    "btn_pill_border": "#3b82f6", # 快捷标签外框
+    "accent_red": "#f43f5e",       # 危险/停止红 Rose 500
+    "accent_red_hover": "#e11d48",
+    "accent_amber": "#f59e0b",     # 警告琥珀色 Amber 500
+    "accent_purple": "#818cf8",    # 紫罗兰色 Indigo 400
+    "btn_bg": "#223049",           # 普通按键底色
+    "btn_hover": "#334566",        # 按键悬停
+    "btn_active": "#162238",       # 按键激活
+    "btn_pill_bg": "#121b2b",      # 快捷胶囊底色
+    "btn_pill_border": "#2c3e5d",  # 快捷胶囊边框
+    "btn_pill_text": "#7dd3fc",    # 快捷胶囊文本天蓝
 }
 
 
@@ -60,7 +67,7 @@ def hex_to_colorref(hex_str: str) -> int:
 
 
 def apply_dark_titlebar(window: tk.Tk):
-    """为 Windows 10/11 窗口启用精准沉浸式无缝标题栏（精确匹配内容背景与边框）"""
+    """为 Windows 10/11 窗口启用精准沉浸式暗黑标题栏"""
     if os.name != "nt":
         return
     try:
@@ -76,22 +83,19 @@ def apply_dark_titlebar(window: tk.Tk):
                 hwnd, attr, ctypes.byref(val), ctypes.sizeof(val)
             )
 
-        # 2. 精确设置标题栏背景色（与主页面背景 #0f172a 100% 融合）
-        # DWMWA_CAPTION_COLOR = 35 (Windows 11 / Windows 10 build 22000+)
-        caption_color = ctypes.c_int(hex_to_colorref(THEME["bg_main"]))
+        # 2. 精确设置标题栏背景色（与主页面背景融合）
+        caption_color = ctypes.c_int(hex_to_colorref(THEME["bg_navbar"]))
         ctypes.windll.dwmapi.DwmSetWindowAttribute(
             hwnd, 35, ctypes.byref(caption_color), ctypes.sizeof(caption_color)
         )
 
         # 3. 设置标题栏文字颜色（亮白）
-        # DWMWA_TEXT_COLOR = 36
         text_color = ctypes.c_int(hex_to_colorref(THEME["text_main"]))
         ctypes.windll.dwmapi.DwmSetWindowAttribute(
             hwnd, 36, ctypes.byref(text_color), ctypes.sizeof(text_color)
         )
 
-        # 4. 设置窗口外边框颜色（与卡片外框 #334155 呼应）
-        # DWMWA_BORDER_COLOR = 34
+        # 4. 设置窗口外边框颜色
         border_color = ctypes.c_int(hex_to_colorref(THEME["border_card"]))
         ctypes.windll.dwmapi.DwmSetWindowAttribute(
             hwnd, 34, ctypes.byref(border_color), ctypes.sizeof(border_color)
@@ -101,7 +105,7 @@ def apply_dark_titlebar(window: tk.Tk):
 
 
 class ModernButton(tk.Canvas):
-    """现代矢量平滑圆角按钮，支持悬停、点击反馈与多种预设风格"""
+    """现代矢量平滑圆角按钮，支持悬停、点击反馈与光标提示"""
     def __init__(
         self,
         parent,
@@ -122,7 +126,8 @@ class ModernButton(tk.Canvas):
             width=width,
             height=height,
             bg=parent["bg"],
-            highlightthickness=0
+            highlightthickness=0,
+            cursor="hand2" if state == "normal" else "arrow"
         )
         self.text = text
         self.command = command
@@ -147,15 +152,16 @@ class ModernButton(tk.Canvas):
         r = self.radius
         w, h = self.w, self.h
 
-        # 禁用状态变暗
         if self.state == "disabled":
-            fill_c = "#1e293b"
+            fill_c = "#141c2b"
             text_c = "#475569"
-            outline_c = ""
+            outline_c = "#1e293b"
+            self.configure(cursor="arrow")
         else:
             fill_c = current_bg
             text_c = self.text_color
             outline_c = self.border_color
+            self.configure(cursor="hand2")
 
         points = [
             1 + r, 1,
@@ -192,9 +198,9 @@ class ModernButton(tk.Canvas):
 
 
 class StatusBadge(tk.Canvas):
-    """状态指示徽章（带发光感圆点和文本标签）"""
+    """状态指示徽章（发光脉冲质感圆点和文本标签）"""
     def __init__(self, parent, text: str = "离线", color: str = "#64748b", font_style=("Segoe UI", 9)):
-        super().__init__(parent, width=90, height=26, bg=parent["bg"], highlightthickness=0)
+        super().__init__(parent, width=92, height=26, bg=parent["bg"], highlightthickness=0)
         self.text = text
         self.color = color
         self.font_style = font_style
@@ -207,27 +213,30 @@ class StatusBadge(tk.Canvas):
 
     def _render(self):
         self.delete("all")
-        # 绘制柔和呼吸光晕
-        self.create_oval(3, 8, 15, 20, fill=self.color, outline="")
-        # 发光内圈
-        self.create_oval(5, 10, 13, 18, fill="#ffffff", outline="")
-        self.create_oval(6, 11, 12, 17, fill=self.color, outline="")
+        # 外层柔和微光
+        self.create_oval(3, 7, 17, 21, fill=self.color, outline="")
+        # 发光内圈核心
+        self.create_oval(6, 10, 14, 18, fill="#ffffff", outline="")
+        self.create_oval(7, 11, 13, 17, fill=self.color, outline="")
         # 文字
-        self.create_text(22, 14, text=self.text, anchor="w", fill="#cbd5e1", font=self.font_style)
+        self.create_text(24, 14, text=self.text, anchor="w", fill="#cbd5e1", font=self.font_style)
 
 
 class ModernPanel(tk.Frame):
-    """卡片式现代面板控件"""
+    """卡片式现代面板控件（带服务标识、虚拟终端缓冲区、快速胶囊动作）"""
     def __init__(
         self,
         parent,
         title: str,
         subtitle: str,
+        tag: str,
+        tag_color: str,
         script_name: str,
         cmd_list: list[str],
         allow_input: bool = False,
         quick_actions: Optional[list[tuple[str, str | Callable[[], None]]]] = None,
-        max_buffer_rows: int = 35
+        max_buffer_rows: int = 35,
+        on_status_change: Optional[Callable[[], None]] = None
     ):
         super().__init__(
             parent,
@@ -239,10 +248,13 @@ class ModernPanel(tk.Frame):
         )
         self.title = title
         self.subtitle = subtitle
+        self.tag = tag
+        self.tag_color = tag_color
         self.script_name = script_name
         self.cmd_list = cmd_list
         self.allow_input = allow_input
         self.quick_actions = quick_actions or []
+        self.on_status_change = on_status_change
 
         self.term_buffer = VirtualTerminalBuffer(max_rows=max_buffer_rows, cols=120)
         self.process: Optional[subprocess.Popen] = None
@@ -261,20 +273,34 @@ class ModernPanel(tk.Frame):
 
     def _build_header(self):
         head = tk.Frame(self, bg=THEME["bg_card"])
-        head.pack(fill=tk.X, side=tk.TOP, pady=(0, 8))
+        head.pack(fill=tk.X, side=tk.TOP, pady=(0, 10))
 
-        # 标题与副标
+        # 标题区域与服务分类胶囊
         title_box = tk.Frame(head, bg=THEME["bg_card"])
         title_box.pack(side=tk.LEFT, fill=tk.Y)
 
+        title_row = tk.Frame(title_box, bg=THEME["bg_card"])
+        title_row.pack(anchor=tk.W)
+
+        tag_lbl = tk.Label(
+            title_row,
+            text=f" {self.tag} ",
+            font=("Consolas", 8, "bold"),
+            fg=self.tag_color,
+            bg="#121b2b",
+            padx=3,
+            pady=1
+        )
+        tag_lbl.pack(side=tk.LEFT, padx=(0, 6))
+
         lbl_title = tk.Label(
-            title_box,
+            title_row,
             text=self.title,
             font=("Segoe UI", 11, "bold"),
             fg=THEME["text_main"],
             bg=THEME["bg_card"]
         )
-        lbl_title.pack(anchor=tk.W)
+        lbl_title.pack(side=tk.LEFT)
 
         lbl_sub = tk.Label(
             title_box,
@@ -283,9 +309,9 @@ class ModernPanel(tk.Frame):
             fg=THEME["text_dim"],
             bg=THEME["bg_card"]
         )
-        lbl_sub.pack(anchor=tk.W)
+        lbl_sub.pack(anchor=tk.W, pady=(2, 0))
 
-        # 状态徽章
+        # 右侧状态指示徽章
         self.badge = StatusBadge(head, text="待命", color="#64748b")
         self.badge.pack(side=tk.RIGHT, padx=(0, 2))
 
@@ -296,41 +322,53 @@ class ModernPanel(tk.Frame):
         # 启停操作按键
         self.btn_start = ModernButton(
             bar, "▶ 启动", command=self.start_process,
-            bg_color="#059669", hover_color="#10b981", width=62, height=26
+            bg_color="#059669", hover_color="#10b981", text_color="#ffffff",
+            width=64, height=26, radius=5
         )
         self.btn_start.pack(side=tk.LEFT, padx=(0, 4))
 
         self.btn_stop = ModernButton(
             bar, "⏹ 停止", command=self.stop_process,
-            bg_color="#dc2626", hover_color="#ef4444", width=62, height=26, state="disabled"
+            bg_color="#dc2626", hover_color="#ef4444", text_color="#ffffff",
+            width=64, height=26, radius=5, state="disabled"
         )
         self.btn_stop.pack(side=tk.LEFT, padx=(0, 4))
 
         self.btn_restart = ModernButton(
             bar, "🔄 重启", command=self.restart_process,
-            bg_color="#0284c7", hover_color="#38bdf8", width=62, height=26, state="disabled"
+            bg_color="#0284c7", hover_color="#38bdf8", text_color="#ffffff",
+            width=64, height=26, radius=5, state="disabled"
         )
         self.btn_restart.pack(side=tk.LEFT, padx=(0, 4))
 
+        # 右侧工具按键
         self.btn_clear = ModernButton(
             bar, "清屏", command=self.clear_log,
-            bg_color="#334155", hover_color="#475569", width=50, height=26
+            bg_color="#1f2d42", hover_color="#2b3e5c", text_color="#94a3b8",
+            width=48, height=26, radius=5
         )
-        self.btn_clear.pack(side=tk.RIGHT, padx=0)
+        self.btn_clear.pack(side=tk.RIGHT, padx=(4, 0))
 
-        # 快捷指令胶囊
+        self.btn_copy = ModernButton(
+            bar, "复制", command=self.copy_log,
+            bg_color="#1f2d42", hover_color="#2b3e5c", text_color="#94a3b8",
+            width=48, height=26, radius=5
+        )
+        self.btn_copy.pack(side=tk.RIGHT, padx=0)
+
+        # 快捷指令胶囊栏
         if self.quick_actions:
             pill_bar = tk.Frame(self, bg=THEME["bg_card"])
             pill_bar.pack(fill=tk.X, side=tk.TOP, pady=(0, 8))
 
             tag_lbl = tk.Label(
                 pill_bar,
-                text="快捷: ",
+                text="快捷操作:",
                 font=("Segoe UI", 8),
                 fg=THEME["text_dim"],
                 bg=THEME["bg_card"]
             )
-            tag_lbl.pack(side=tk.LEFT, padx=(0, 4))
+            tag_lbl.pack(side=tk.LEFT, padx=(0, 6))
 
             for label, act in self.quick_actions:
                 if callable(act):
@@ -341,12 +379,12 @@ class ModernPanel(tk.Frame):
                     pill_bar,
                     label,
                     command=cmd,
-                    bg_color="#1e293b",
-                    hover_color="#334155",
-                    text_color="#38bdf8",
-                    border_color="#3b82f6",
+                    bg_color=THEME["btn_pill_bg"],
+                    hover_color="#1e2c45",
+                    text_color=THEME["btn_pill_text"],
+                    border_color=THEME["btn_pill_border"],
                     font_style=("Segoe UI", 8, "bold"),
-                    width=max(50, len(label) * 12 + 16),
+                    width=max(54, len(label) * 11 + 16),
                     height=24,
                     radius=4
                 )
@@ -362,15 +400,16 @@ class ModernPanel(tk.Frame):
         )
         term_wrap.pack(fill=tk.BOTH, expand=True, side=tk.TOP)
 
+        font_family = "Cascadia Code" if "Cascadia Code" in tkfont.families() else "Consolas"
         self.log_text = tk.Text(
             term_wrap,
             wrap=tk.CHAR,
             bg=THEME["bg_card_inner"],
             fg=THEME["terminal_text"],
             insertbackground="#38bdf8",
-            selectbackground="#334155",
+            selectbackground="#26334d",
             selectforeground="#ffffff",
-            font=("Cascadia Code", 9) if "Cascadia Code" in tkfont.families() else ("Consolas", 9),
+            font=(font_family, 9),
             relief=tk.FLAT,
             padx=10,
             pady=8,
@@ -383,7 +422,7 @@ class ModernPanel(tk.Frame):
             bg=THEME["bg_card_inner"],
             troughcolor=THEME["bg_card_inner"],
             relief=tk.FLAT,
-            width=10
+            width=9
         )
         self.log_text.configure(yscrollcommand=scrollbar.set)
 
@@ -401,13 +440,13 @@ class ModernPanel(tk.Frame):
             highlightbackground=THEME["border_card"],
             highlightthickness=1,
             padx=8,
-            pady=3
+            pady=2
         )
         entry_wrap.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
 
         prompt_icon = tk.Label(
             entry_wrap,
-            text=">",
+            text="❯",
             font=("Consolas", 10, "bold"),
             fg=THEME["accent_blue"],
             bg=THEME["bg_card_inner"]
@@ -417,12 +456,11 @@ class ModernPanel(tk.Frame):
         self.entry_input = tk.Entry(
             entry_wrap,
             textvariable=self.entry_var,
-            font=("Consolas", 9),
             bg=THEME["bg_card_inner"],
             fg=THEME["text_main"],
             insertbackground=THEME["accent_blue"],
             relief=tk.FLAT,
-            highlightthickness=0
+            font=("Segoe UI", 9)
         )
         self.entry_input.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self.entry_input.bind("<Return>", lambda e: self._on_submit())
@@ -434,7 +472,8 @@ class ModernPanel(tk.Frame):
             bg_color=THEME["btn_bg"],
             hover_color=THEME["accent_blue_hover"],
             width=58,
-            height=28
+            height=28,
+            radius=4
         )
         btn_send.pack(side=tk.RIGHT)
 
@@ -456,6 +495,14 @@ class ModernPanel(tk.Frame):
         self.log_text.delete("1.0", tk.END)
         self.log_text.configure(state=tk.DISABLED)
 
+    def copy_log(self):
+        text = self.term_buffer.get_display_text()
+        if text:
+            self.clipboard_clear()
+            self.clipboard_append(text)
+            self.term_buffer.feed("✦ [提示] 控制台日志已复制到剪贴板\n")
+            self._render_screen()
+
     def start_process(self):
         if self.is_running:
             return
@@ -464,7 +511,9 @@ class ModernPanel(tk.Frame):
         if not os.path.exists(target_file):
             self.term_buffer.feed(f"[Error] 未找到脚本: {target_file}\n")
             self._render_screen()
-            self.badge.update_status("丢失", THEME["accent_red"])
+            self.badge.update_status("文件丢失", THEME["accent_red"])
+            if self.on_status_change:
+                self.on_status_change()
             return
 
         self.term_buffer.feed(f"✦ 正在载入任务: {self.title}\n")
@@ -474,6 +523,8 @@ class ModernPanel(tk.Frame):
         self.btn_stop.set_state("normal")
         self.btn_restart.set_state("normal")
         self.is_running = True
+        if self.on_status_change:
+            self.on_status_change()
 
         child_env = os.environ.copy()
         child_env["PYTHONUNBUFFERED"] = "1"
@@ -566,6 +617,8 @@ class ModernPanel(tk.Frame):
         self.btn_restart.set_state("disabled")
         self.term_buffer.feed(f"\n✦ 进程安全停止 (返回码: {exit_code})\n")
         self._render_screen()
+        if self.on_status_change:
+            self.on_status_change()
 
     def send_input(self, text: str):
         if not self.is_running or not self.process or not self.process.stdin:
@@ -658,9 +711,9 @@ Get-CimInstance Win32_Process | Where-Object {{
 class ModernConsoleApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Nexus Hub · 自动化服务集成控制中心")
-        self.geometry("1460x860")
-        self.minsize(1050, 600)
+        self.title("Nexus Control Studio · 服务集成控制中心")
+        self.geometry("1480x880")
+        self.minsize(1080, 640)
         self.configure(bg=THEME["bg_main"])
 
         # 注入 Windows 原生深色标题栏
@@ -668,82 +721,100 @@ class ModernConsoleApp(tk.Tk):
 
         self._build_top_navbar()
         self._build_main_grid()
+        self._build_status_bar()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
-        # 启动后依次自动加载运行
+        # 启动后更新服务状态汇总并依次自动加载运行
+        self.update_services_summary()
         self.after(300, self.start_all)
+        self._start_clock_timer()
 
     def _build_top_navbar(self):
         nav = tk.Frame(
             self,
-            bg=THEME["bg_main"],
-            padx=24,
-            pady=16
+            bg=THEME["bg_navbar"],
+            padx=20,
+            pady=14
         )
         nav.pack(fill=tk.X, side=tk.TOP)
 
         # 品牌 LOGO 与主标
-        brand_frame = tk.Frame(nav, bg=THEME["bg_main"])
+        brand_frame = tk.Frame(nav, bg=THEME["bg_navbar"])
         brand_frame.pack(side=tk.LEFT)
 
         icon_lbl = tk.Label(
             brand_frame,
             text="◈",
-            font=("Segoe UI Symbol", 16, "bold"),
+            font=("Segoe UI Symbol", 15, "bold"),
             fg=THEME["accent_blue"],
-            bg=THEME["bg_main"]
+            bg=THEME["bg_navbar"]
         )
         icon_lbl.pack(side=tk.LEFT, padx=(0, 8))
 
         title_lbl = tk.Label(
             brand_frame,
-            text="SERVICE MATRIX",
-            font=("Segoe UI", 13, "bold"),
+            text="NEXUS CONTROL STUDIO",
+            font=("Segoe UI", 12, "bold"),
             fg=THEME["text_main"],
-            bg=THEME["bg_main"]
+            bg=THEME["bg_navbar"]
         )
         title_lbl.pack(side=tk.LEFT)
 
         badge_sub = tk.Label(
             brand_frame,
-            text=" v2.5 PRO ",
+            text=" v3.0 PRO ",
             font=("Consolas", 8, "bold"),
             fg=THEME["accent_blue"],
-            bg="#1e293b",
-            padx=4,
+            bg="#172338",
+            padx=5,
             pady=2
         )
-        badge_sub.pack(side=tk.LEFT, padx=(8, 0))
+        badge_sub.pack(side=tk.LEFT, padx=(8, 12))
+
+        # 中间全局服务运行状态计数指示
+        self.summary_badge = tk.Label(
+            brand_frame,
+            text="● 正在初始化服务...",
+            font=("Segoe UI", 9, "bold"),
+            fg=THEME["text_dim"],
+            bg="#111a29",
+            padx=10,
+            pady=3
+        )
+        self.summary_badge.pack(side=tk.LEFT, padx=(0, 10))
 
         # 右侧全局控制按键
-        ctrl_frame = tk.Frame(nav, bg=THEME["bg_main"])
+        ctrl_frame = tk.Frame(nav, bg=THEME["bg_navbar"])
         ctrl_frame.pack(side=tk.RIGHT)
 
         btn_all_start = ModernButton(
-            ctrl_frame, "全部拉起", command=self.start_all,
-            bg_color="#059669", hover_color="#10b981", width=76, height=28, radius=6
+            ctrl_frame, "▶ 全部启动", command=self.start_all,
+            bg_color="#059669", hover_color="#10b981", text_color="#ffffff",
+            width=84, height=28, radius=6
         )
         btn_all_start.pack(side=tk.LEFT, padx=4)
 
         btn_all_restart = ModernButton(
-            ctrl_frame, "全量重启", command=self.restart_all,
-            bg_color="#0284c7", hover_color="#38bdf8", width=76, height=28, radius=6
+            ctrl_frame, "🔄 全量重启", command=self.restart_all,
+            bg_color="#0284c7", hover_color="#38bdf8", text_color="#ffffff",
+            width=84, height=28, radius=6
         )
         btn_all_restart.pack(side=tk.LEFT, padx=4)
 
         btn_all_stop = ModernButton(
-            ctrl_frame, "全量停止", command=self.stop_all,
-            bg_color="#dc2626", hover_color="#ef4444", width=76, height=28, radius=6
+            ctrl_frame, "⏹ 全部停止", command=self.stop_all,
+            bg_color="#dc2626", hover_color="#ef4444", text_color="#ffffff",
+            width=84, height=28, radius=6
         )
         btn_all_stop.pack(side=tk.LEFT, padx=4)
 
-        # 顶部与下层内容区域之间的精致渐变/深色分割过渡线
+        # 顶部微细分割线
         sep = tk.Frame(self, bg=THEME["border_card"], height=1)
         sep.pack(fill=tk.X, side=tk.TOP)
 
     def _build_main_grid(self):
         # 容器内边距
-        content_frame = tk.Frame(self, bg=THEME["bg_main"], padx=16, pady=16)
+        content_frame = tk.Frame(self, bg=THEME["bg_main"], padx=14, pady=14)
         content_frame.pack(fill=tk.BOTH, expand=True)
 
         # 3 列均等网格布局
@@ -754,20 +825,23 @@ class ModernConsoleApp(tk.Tk):
 
         # 面板 1: VPS 控制台
         vps_actions = [
-            ("⚡ 唤醒", "1"),
-            ("🌙 休眠", "2"),
-            ("🛑 关机", "3"),
-            ("🖥️ RDP连接", "4"),
+            ("唤醒 (1)", "1"),
+            ("休眠 (2)", "2"),
+            ("关机 (3)", "3"),
+            ("远程桌面 (4)", "4"),
         ]
         self.panel_vps = ModernPanel(
             content_frame,
             title="VPS 云节点控制",
-            subtitle="vpscodex.py · Selenium Remote Driver",
+            subtitle="vpscodex.py · Selenium Driver",
+            tag="CLOUD",
+            tag_color="#a78bfa",
             script_name="vpscodex.py",
             cmd_list=[sys.executable, "-u", "vpscodex.py"],
             allow_input=True,
             quick_actions=vps_actions,
-            max_buffer_rows=40
+            max_buffer_rows=40,
+            on_status_change=self.update_services_summary
         )
         self.panel_vps.grid(row=0, column=0, sticky="nsew", padx=6)
 
@@ -783,11 +857,14 @@ class ModernConsoleApp(tk.Tk):
             content_frame,
             title="系统代理守候",
             subtitle="systemproxy_watcher.py · Registry WinINet",
+            tag="PROXY",
+            tag_color="#38bdf8",
             script_name="systemproxy_watcher.py",
             cmd_list=[sys.executable, "-u", "systemproxy_watcher.py"],
             allow_input=True,
             quick_actions=proxy_actions,
-            max_buffer_rows=32
+            max_buffer_rows=32,
+            on_status_change=self.update_services_summary
         )
         self.panel_proxy.grid(row=0, column=1, sticky="nsew", padx=6)
 
@@ -795,27 +872,105 @@ class ModernConsoleApp(tk.Tk):
         self.panel_bt = ModernPanel(
             content_frame,
             title="蓝牙连接保活",
-            subtitle="bluetooth.ps1 · PnP Power Management",
+            subtitle="bluetooth.ps1 · PnP Power",
+            tag="SYSTEM",
+            tag_color="#34d399",
             script_name="bluetooth.bat",
             cmd_list=["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "bluetooth.ps1", "-Elevated"],
             allow_input=False,
-            max_buffer_rows=32
+            max_buffer_rows=32,
+            on_status_change=self.update_services_summary
         )
         self.panel_bt.grid(row=0, column=2, sticky="nsew", padx=6)
 
         self.panels = [self.panel_vps, self.panel_proxy, self.panel_bt]
 
+    def _build_status_bar(self):
+        # 底部状态栏分割线
+        sep = tk.Frame(self, bg=THEME["border_card"], height=1)
+        sep.pack(fill=tk.X, side=tk.BOTTOM)
+
+        bar = tk.Frame(self, bg=THEME["bg_navbar"], padx=16, pady=6)
+        bar.pack(fill=tk.X, side=tk.BOTTOM)
+
+        # 左侧权限指示
+        is_admin = False
+        try:
+            is_admin = (ctypes.windll.shell32.IsUserAnAdmin() != 0) if os.name == "nt" else True
+        except Exception:
+            pass
+
+        priv_text = "● 管理员特权运行" if is_admin else "○ 标准用户权限"
+        priv_color = THEME["accent_green"] if is_admin else THEME["accent_amber"]
+        lbl_priv = tk.Label(
+            bar,
+            text=priv_text,
+            font=("Segoe UI", 8, "bold"),
+            fg=priv_color,
+            bg=THEME["bg_navbar"]
+        )
+        lbl_priv.pack(side=tk.LEFT, padx=(0, 16))
+
+        # 中间快捷说明
+        lbl_hint = tk.Label(
+            bar,
+            text="快捷提示: 双击快捷胶囊下发指令 · 各服务支持独立 ANSI 字符缓冲区与 \\r 刷新",
+            font=("Segoe UI", 8),
+            fg=THEME["text_dim"],
+            bg=THEME["bg_navbar"]
+        )
+        lbl_hint.pack(side=tk.LEFT)
+
+        # 右侧实时时钟
+        self.lbl_clock = tk.Label(
+            bar,
+            text=time.strftime("%Y-%m-%d %H:%M:%S"),
+            font=("Consolas", 8),
+            fg=THEME["text_sub"],
+            bg=THEME["bg_navbar"]
+        )
+        self.lbl_clock.pack(side=tk.RIGHT)
+
+    def _start_clock_timer(self):
+        if hasattr(self, "lbl_clock") and self.lbl_clock.winfo_exists():
+            self.lbl_clock.configure(text=time.strftime("%Y-%m-%d %H:%M:%S"))
+            self.after(1000, self._start_clock_timer)
+
+    def update_services_summary(self):
+        if not hasattr(self, "panels"):
+            return
+        running_cnt = sum(1 for p in self.panels if p.is_running)
+        total_cnt = len(self.panels)
+        if running_cnt == total_cnt:
+            self.summary_badge.configure(
+                text=f"● 全部运行中 ({running_cnt}/{total_cnt})",
+                fg=THEME["accent_green"]
+            )
+        elif running_cnt > 0:
+            self.summary_badge.configure(
+                text=f"● 部分就绪 ({running_cnt}/{total_cnt})",
+                fg=THEME["accent_amber"]
+            )
+        else:
+            self.summary_badge.configure(
+                text=f"○ 服务未运行 (0/{total_cnt})",
+                fg=THEME["text_dim"]
+            )
+
     def start_all(self):
         for p in self.panels:
             p.start_process()
+        self.update_services_summary()
 
     def stop_all(self):
         for p in self.panels:
             p.stop_process()
+        self.update_services_summary()
 
     def restart_all(self):
         for p in self.panels:
             p.restart_process()
+        self.update_services_summary()
 
     def on_close(self):
         if any(p.is_running for p in self.panels):

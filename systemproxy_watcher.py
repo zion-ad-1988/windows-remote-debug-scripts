@@ -10,10 +10,10 @@ from typing import Optional
 
 # ====== 配置区域 ======
 PROXY_POOL = [
+    "127.0.0.1:20808",
     "127.0.0.1:10808",
     "127.0.0.1:9990",
     "127.0.0.1:8890",
-    "127.0.0.1:20808",
     "127.0.0.1:7897",
 ]
 DEFAULT_PROXY_INDEX = 0
@@ -148,6 +148,12 @@ def read_proxy_choice(logs: list[str]) -> tuple[Optional[str], bool]:
         if not text:
             continue
 
+        # 检查是否为清屏/清除指令
+        if text.lower() in ("cls", "clear", "clean", "c"):
+            logs.clear()
+            render_static_screen()
+            return None, True
+
         # 检查是否为固定预设代理编号（1 ~ len(PROXY_POOL)）
         if text.isdigit():
             num = int(text)
@@ -174,6 +180,11 @@ def read_proxy_choice(logs: list[str]) -> tuple[Optional[str], bool]:
         if msvcrt.kbhit():
             msvcrt.getwch()
         return None, False
+
+    if key.lower() in ("c", "\x0c"):
+        logs.clear()
+        render_static_screen()
+        return None, True
 
     # 控制台按键单键判断：1 ~ len(PROXY_POOL)
     if key.isdigit():
@@ -224,6 +235,10 @@ def render_dynamic_screen(current_proxy: str, remaining: int, logs: list[str]):
     for offset in range(MAX_LOG_LINES):
         line = logs[offset] if offset < len(logs) else ""
         write_at(LOG_START_ROW + offset, line)
+
+    # 清除日志区下方可能残留的多余行
+    for extra in range(LOG_START_ROW + MAX_LOG_LINES, LOG_START_ROW + MAX_LOG_LINES + 10):
+        write_at(extra, "")
 
     write_at(LOG_START_ROW + MAX_LOG_LINES, "")
     sys.stdout.flush()

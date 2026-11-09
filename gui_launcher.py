@@ -1,22 +1,25 @@
 # -*- coding: utf-8 -*-
 """
-现代化暗黑风格多脚本集成管理控制台 (Nexus Control Studio)
-UI/UX Pro Max 规范重构版：
-- 沉浸式暗黑 Windows 标题栏（DWM 注入）
-- Tailwind Slate / Linear 风格现代深色调色板
-- 矢量平滑圆角按钮（内置 Hand 光标、悬停平滑反馈与点击态）
-- 柔光呼吸状态徽章（支持 运行中 / 已停止 / 异常 实时展示）
-- 模块化面板卡片，带服务标识徽标、快捷控制胶囊与终端流式缓冲区
-- 底部状态栏支持管理员特权检测、全局快捷键提示与实时时钟
+NEXUS · 服务集成操控台
+设计语言：与 testApp_gui 一致的浅色工业精密风
+- 暖灰工作区、仪器面板、单一工业橙强调色；浅色 / 深色可切换
+- 三组服务全部平铺，无选项卡、折叠面板或隐藏式二级菜单
+- 相同层级的 8px 间距、统一按钮高度与清晰键盘焦点
+- 运行、危险、中性操作使用不同视觉等级，日志集中反馈
+- Canvas 矢量图标，离线零依赖
 """
 
 import sys
 import os
 import time
+import math
 import queue
 import threading
 import subprocess
+import codecs
 import ctypes
+import tempfile
+import atexit
 import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import messagebox
@@ -26,35 +29,72 @@ from terminal_buffer import VirtualTerminalBuffer
 # 脚本所在工作目录
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# 现代极简暗黑主题调色板 (Tailwind Slate / Dark Mode Palette)
-THEME = {
-    "bg_main": "#0b0f19",          # 主窗口最深底色
-    "bg_navbar": "#0f172a",        # 顶部导航栏背景
-    "bg_card": "#161f30",          # 卡片/面板背景
-    "bg_card_header": "#1a253a",   # 卡片头部背景
-    "bg_card_inner": "#070b14",    # 终端内背景 Deep Dark
-    "border_card": "#26334d",      # 卡片边框
-    "border_light": "#3e517a",     # 悬浮与激活边框
-    "border_subtle": "#1e293b",    # 次要分隔线
-    "text_main": "#f8fafc",        # 主文字亮白
-    "text_sub": "#94a3b8",         # 副标题/说明文字
-    "text_dim": "#64748b",         # 次要提示/暗色文字
-    "terminal_text": "#e2e8f0",    # 控制台亮白
-    "accent_blue": "#38bdf8",      # 天蓝高亮 Sky 400
-    "accent_blue_hover": "#0284c7",
-    "accent_green": "#10b981",     # 运行绿 Emerald 500
-    "accent_green_hover": "#059669",
-    "accent_red": "#f43f5e",       # 危险/停止红 Rose 500
-    "accent_red_hover": "#e11d48",
-    "accent_amber": "#f59e0b",     # 警告琥珀色 Amber 500
-    "accent_purple": "#818cf8",    # 紫罗兰色 Indigo 400
-    "btn_bg": "#223049",           # 普通按键底色
-    "btn_hover": "#334566",        # 按键悬停
-    "btn_active": "#162238",       # 按键激活
-    "btn_pill_bg": "#121b2b",      # 快捷胶囊底色
-    "btn_pill_border": "#2c3e5d",  # 快捷胶囊边框
-    "btn_pill_text": "#7dd3fc",    # 快捷胶囊文本天蓝
+# 窗口 / 任务栏图标资源与独立的 AppUserModelID
+ICON_PNG = os.path.join(SCRIPT_DIR, "computer_desk.png")
+APP_USER_MODEL_ID = "Nexus.Field.Deck.1"
+
+# 浅色工业精密风双主题调色板：与 testApp_gui 共用视觉令牌
+THEMES = {
+    "light": {
+        "bg_deepest":   "#F2F3EF",     # 暖灰工作区
+        "bg_panel":     "#FBFCF9",     # 仪器面板
+        "bg_raise":     "#F4F6F1",     # 控件抬升面
+        "bg_inset":     "#20261F",     # 高对比运行日志
+        "line_soft":    "#D8DDD4",     # 发丝分隔线
+        "line_strong":  "#B8C1B4",     # 强调描边
+        "text_hi":      "#20261F",     # 墨绿黑主文字
+        "text_mid":     "#4E5A4C",     # 次级文字
+        "text_lo":      "#606C5E",     # 说明文字
+        "term_text":    "#E6EADF",     # 终端文字
+        "signal":       "#B84A24",     # 工业橙强调
+        "signal_hover": "#963B1C",
+        "signal_pressed": "#7C3016",
+        "signal_on_dark": "#853316",   # 浅底上的橙色文字
+        "go":           "#276A4D",     # 运行状态绿
+        "go_bg":        "#276A4D",     # 启动键底
+        "go_hover":     "#1E563D",
+        "danger":       "#A63B36",     # 危险状态
+        "danger_bg":    "#A63B36",     # 停止键底
+        "danger_hover": "#87302C",
+        "info":         "#3B657A",     # 系统信息
+        "warn":         "#8A5A1B",     # 注意状态
+        "violet":       "#655478",     # 云服务标签
+        "chip_bg":      "#F4F6F1",
+        "chip_border":  "#D8DDD4",
+        "chip_text":    "#4E5A4C",
+    },
+    "dark": {
+        "bg_deepest":   "#111410",
+        "bg_panel":     "#191D18",
+        "bg_raise":     "#22281F",
+        "bg_inset":     "#0D100C",
+        "line_soft":    "#323A2F",
+        "line_strong":  "#4A5645",
+        "text_hi":      "#ECEFE7",
+        "text_mid":     "#B2BAAC",
+        "text_lo":      "#899381",
+        "term_text":    "#DCE3D6",
+        "signal":       "#D16A3C",
+        "signal_hover": "#E07B4D",
+        "signal_pressed": "#B0522A",
+        "signal_on_dark": "#F0A17D",
+        "go":           "#59B98B",
+        "go_bg":        "#2F7D57",
+        "go_hover":     "#2A7252",
+        "danger":       "#E38A82",
+        "danger_bg":    "#B94B45",
+        "danger_hover": "#87302C",
+        "info":         "#76B7D1",
+        "warn":         "#D9A441",
+        "violet":       "#C4B5FD",
+        "chip_bg":      "#22281F",
+        "chip_border":  "#323A2F",
+        "chip_text":    "#B2BAAC",
+    }
 }
+
+# 当前活动主题全局指针（默认浅色工业风）
+THEME = THEMES["light"]
 
 
 def hex_to_colorref(hex_str: str) -> int:
@@ -66,8 +106,8 @@ def hex_to_colorref(hex_str: str) -> int:
     return (b << 16) | (g << 8) | r
 
 
-def apply_dark_titlebar(window: tk.Tk):
-    """为 Windows 10/11 窗口启用精准沉浸式暗黑标题栏"""
+def apply_titlebar_theme(window: tk.Tk, is_dark: bool):
+    """为 Windows 10/11 窗口设置匹配的暗黑或明亮标题栏"""
     if os.name != "nt":
         return
     try:
@@ -76,27 +116,24 @@ def apply_dark_titlebar(window: tk.Tk):
         if not hwnd:
             hwnd = window.winfo_id()
 
-        # 1. 强制启用暗黑模式 (DWMWA_USE_IMMERSIVE_DARK_MODE = 20 或 19)
-        val = ctypes.c_int(1)
+        val = ctypes.c_int(1 if is_dark else 0)
         for attr in (20, 19):
             ctypes.windll.dwmapi.DwmSetWindowAttribute(
                 hwnd, attr, ctypes.byref(val), ctypes.sizeof(val)
             )
 
-        # 2. 精确设置标题栏背景色（与主页面背景融合）
-        caption_color = ctypes.c_int(hex_to_colorref(THEME["bg_navbar"]))
+        theme_data = THEMES["dark" if is_dark else "light"]
+        caption_color = ctypes.c_int(hex_to_colorref(theme_data["bg_panel"]))
         ctypes.windll.dwmapi.DwmSetWindowAttribute(
             hwnd, 35, ctypes.byref(caption_color), ctypes.sizeof(caption_color)
         )
 
-        # 3. 设置标题栏文字颜色（亮白）
-        text_color = ctypes.c_int(hex_to_colorref(THEME["text_main"]))
+        text_color = ctypes.c_int(hex_to_colorref(theme_data["text_hi"]))
         ctypes.windll.dwmapi.DwmSetWindowAttribute(
             hwnd, 36, ctypes.byref(text_color), ctypes.sizeof(text_color)
         )
 
-        # 4. 设置窗口外边框颜色
-        border_color = ctypes.c_int(hex_to_colorref(THEME["border_card"]))
+        border_color = ctypes.c_int(hex_to_colorref(theme_data["line_soft"]))
         ctypes.windll.dwmapi.DwmSetWindowAttribute(
             hwnd, 34, ctypes.byref(border_color), ctypes.sizeof(border_color)
         )
@@ -104,22 +141,252 @@ def apply_dark_titlebar(window: tk.Tk):
         pass
 
 
-class ModernButton(tk.Canvas):
-    """现代矢量平滑圆角按钮，支持悬停、点击反馈与光标提示"""
+def set_app_user_model_id():
+    """声明进程级 AppUserModelID，避免任务栏沿用 pythonw.exe 的默认图标分组"""
+    if os.name != "nt":
+        return
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+    except Exception:
+        pass
+
+
+def apply_window_icon(window: tk.Tk):
+    """为窗口与任务栏设置 computer_desk.png 图标（多尺寸以适配任务栏/标题栏）"""
+    if not os.path.exists(ICON_PNG):
+        return
+    try:
+        images = []
+        try:
+            from PIL import Image, ImageTk
+            with Image.open(ICON_PNG) as src:
+                src = src.convert("RGBA")
+                for size in (16, 24, 32, 48, 64, 128, 256):
+                    images.append(ImageTk.PhotoImage(src.resize((size, size), Image.LANCZOS)))
+        except Exception:
+            images = [tk.PhotoImage(file=ICON_PNG)]
+
+        window.iconphoto(True, *images)
+        window._icon_refs = images
+
+        if os.name == "nt":
+            from PIL import Image
+            fd, ico_path = tempfile.mkstemp(suffix=".ico", prefix="field_deck_")
+            os.close(fd)
+            with Image.open(ICON_PNG) as src:
+                src = src.convert("RGBA")
+                src.save(ico_path, format="ICO",
+                         sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+
+            window.update()
+            load = ctypes.windll.user32.LoadImageW
+            load.restype = ctypes.c_void_p
+            load.argtypes = [
+                ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint,
+                ctypes.c_int, ctypes.c_int, ctypes.c_uint,
+            ]
+            big = load(0, ico_path, 1, 0, 0, 0x00000010)
+            small = load(0, ico_path, 1, 16, 16, 0x00000010) or big
+            hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+            if hwnd:
+                hwnd = ctypes.windll.user32.GetAncestor(hwnd, 2) or hwnd
+                if big:
+                    ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 1, big)
+                if small:
+                    ctypes.windll.user32.SendMessageW(hwnd, 0x0080, 0, small)
+                window._icon_handle = (big, small)
+
+            def _cleanup_ico(path=ico_path):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+            atexit.register(_cleanup_ico)
+    except Exception:
+        pass
+
+
+def rounded_rect_points(w: float, h: float, r: float,
+                        tl: bool = True, tr: bool = True,
+                        br: bool = True, bl: bool = True) -> list[float]:
+    """生成可选圆角的矩形多边形点列（圆弧离散采样，y 向下角度顺时针）"""
+    pts: list[float] = []
+    defs = [
+        (tl, r, r, 180, 270, 0, 0),
+        (tr, w - r, r, 270, 360, w, 0),
+        (br, w - r, h - r, 0, 90, w, h),
+        (bl, r, h - r, 90, 180, 0, h),
+    ]
+    for on, cx, cy, a0, a1, px, py in defs:
+        if on and r > 0:
+            steps = 6
+            for i in range(steps + 1):
+                a = math.radians(a0 + (a1 - a0) * i / steps)
+                pts.extend([cx + r * math.cos(a), cy + r * math.sin(a)])
+        else:
+            pts.extend([px, py])
+    return pts
+
+
+def draw_icon(cv: tk.Canvas, name: str, cx: float, cy: float, size: float, color: str):
+    """FIELD DECK 仪器风图标：启停类实心填充、工具类锐利线性（24 网格）"""
+    s = size / 24.0
+    w = max(1.0, round(size / 11.0))
+
+    def X(v):
+        return cx + (v - 12) * s
+
+    def Y(v):
+        return cy + (v - 12) * s
+
+    def line(*pts):
+        cv.create_line(*pts, fill=color, width=w, capstyle=tk.ROUND, joinstyle=tk.ROUND)
+
+    def poly(*pts):
+        cv.create_polygon(*pts, outline=color, fill="", width=w, joinstyle=tk.ROUND)
+
+    def solid(*pts):
+        cv.create_polygon(*pts, outline=color, fill=color, width=1, joinstyle=tk.ROUND)
+
+    if name == "play":
+        solid(X(8), Y(5.2), X(19), Y(12), X(8), Y(18.8))
+    elif name == "play-all":
+        solid(X(5.4), Y(5.6), X(12.8), Y(12), X(5.4), Y(18.4))
+        solid(X(12.6), Y(5.6), X(20), Y(12), X(12.6), Y(18.4))
+    elif name == "stop":
+        pts = rounded_rect_points(10 * s, 10 * s, 2 * s)
+        pts = [X(7) + p if i % 2 == 0 else Y(7) + p for i, p in enumerate(pts)]
+        cv.create_polygon(pts, outline=color, fill=color, width=1, joinstyle=tk.ROUND)
+    elif name == "stop-all":
+        cv.create_oval(X(3.2), Y(3.2), X(20.8), Y(20.8), outline=color, width=w)
+        pts = rounded_rect_points(7 * s, 7 * s, 1.5 * s)
+        pts = [X(8.5) + p if i % 2 == 0 else Y(8.5) + p for i, p in enumerate(pts)]
+        cv.create_polygon(pts, outline=color, fill=color, width=1, joinstyle=tk.ROUND)
+    elif name == "restart":
+        cv.create_arc(X(3.6), Y(3.6), X(20.4), Y(20.4), style="arc",
+                      outline=color, width=w, start=50, extent=290)
+        solid(X(20.9), Y(2.6), X(20.9), Y(10), X(14.2), Y(9.2))
+    elif name == "restart-all":
+        cv.create_arc(X(3.6), Y(3.6), X(20.4), Y(20.4), style="arc",
+                      outline=color, width=w, start=140, extent=235)
+        solid(X(3.1), Y(2.6), X(3.1), Y(10), X(9.8), Y(9.2))
+        cv.create_arc(X(3.6), Y(3.6), X(20.4), Y(20.4), style="arc",
+                      outline=color, width=w, start=320, extent=235)
+        solid(X(20.9), Y(14), X(20.9), Y(21.4), X(14.2), Y(14.8))
+    elif name == "copy":
+        cv.create_rectangle(X(8.5), Y(8.5), X(20.5), Y(20.5), outline=color, width=w)
+        line(X(15.5), Y(8.5), X(15.5), Y(5), X(14), Y(3.5), X(5), Y(3.5), X(3.5), Y(5),
+             X(3.5), Y(15.5), X(8.5), Y(15.5))
+    elif name == "clear":
+        poly(X(4), Y(16.5), X(9.8), Y(10.7), X(14.5), Y(6), X(18.5), Y(6),
+             X(21), Y(8.5), X(21), Y(12.5), X(13.2), Y(20.3), X(7), Y(20.3))
+        line(X(11.5), Y(13.5), X(17.8), Y(7.2))
+        line(X(4), Y(20.3), X(20.5), Y(20.3))
+    elif name == "send":
+        line(X(21), Y(3), X(11.2), Y(12.8))
+        poly(X(21), Y(3), X(14.6), Y(21), X(11.2), Y(12.8), X(3), Y(9.4))
+    elif name == "brand":
+        line(X(3), Y(21), X(21), Y(21))
+        line(X(6.2), Y(17.2), X(6.2), Y(12.6))
+        line(X(12), Y(17.2), X(12), Y(8.2))
+        line(X(17.8), Y(17.2), X(17.8), Y(3.8))
+    elif name == "sun":
+        cv.create_oval(X(8), Y(8), X(16), Y(16), outline=color, fill=color, width=1)
+        line(X(12), Y(2), X(12), Y(5))
+        line(X(12), Y(19), X(12), Y(22))
+        line(X(2), Y(12), X(5), Y(12))
+        line(X(19), Y(12), X(22), Y(12))
+        line(X(4.9), Y(4.9), X(7.1), Y(7.1))
+        line(X(16.9), Y(16.9), X(19.1), Y(19.1))
+        line(X(4.9), Y(19.1), X(7.1), Y(16.9))
+        line(X(16.9), Y(7.1), X(19.1), Y(4.9))
+    elif name == "moon":
+        cv.create_arc(X(3), Y(3), X(21), Y(21), start=70, extent=220, style="arc", outline=color, width=w)
+        cv.create_arc(X(7.5), Y(4), X(20.5), Y(20), start=70, extent=220, style="arc", outline=color, width=w)
+
+
+def draw_brand_mark(cv: tk.Canvas, size: int, bg_color: str, text_color: str):
+    """与 testApp_gui 品牌块一致：圆角工业橙方块 + 单字母字标。"""
+    cv.delete("all")
+    pts = rounded_rect_points(size - 2, size - 2, 8)
+    pts = [p + 1 for p in pts]
+    cv.create_polygon(pts, fill=bg_color, outline="", joinstyle=tk.ROUND)
+    cv.create_text(size / 2, size / 2, text="N",
+                   fill=text_color, font=("Segoe UI", max(15, int(size * 0.52)), "bold"))
+
+
+class ToolTip:
+    """轻量 Tooltip（延迟弹出、随指针离开销毁，仪器面板样式）"""
+    def __init__(self, widget: tk.Widget, text: str):
+        self.widget = widget
+        self.text = text
+        self._win: Optional[tk.Toplevel] = None
+        self._after_id: Optional[str] = None
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<Button-1>", self._hide, add="+")
+
+    def _schedule(self, _event=None):
+        self._cancel()
+        self._after_id = self.widget.after(350, self._show)
+
+    def _cancel(self):
+        if self._after_id is not None:
+            try:
+                self.widget.after_cancel(self._after_id)
+            except Exception:
+                pass
+            self._after_id = None
+
+    def _show(self):
+        if self._win is not None:
+            return
+        x = self.widget.winfo_rootx() + 8
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
+        win = tk.Toplevel(self.widget)
+        win.overrideredirect(True)
+        win.attributes("-topmost", True)
+        lbl = tk.Label(
+            win, text=self.text, font=("Segoe UI", 9),
+            fg=THEME["text_hi"], bg=THEME["bg_raise"],
+            padx=8, pady=4,
+            highlightbackground=THEME["line_strong"], highlightthickness=1
+        )
+        lbl.pack()
+        win.geometry(f"+{x}+{y}")
+        self._win = win
+
+    def _hide(self, _event=None):
+        self._cancel()
+        if self._win is not None:
+            try:
+                self._win.destroy()
+            except Exception:
+                pass
+            self._win = None
+
+
+class DeckButton(tk.Canvas):
+    """仪器按键：可选单侧圆角（支持分段键组）、悬停/点击反馈、实心或线性左图标"""
     def __init__(
         self,
         parent,
         text: str,
         command: Optional[Callable[[], None]] = None,
-        bg_color: str = THEME["btn_bg"],
-        hover_color: str = THEME["btn_hover"],
-        text_color: str = THEME["text_main"],
-        font_style=("Segoe UI", 9, "bold"),
-        width: int = 70,
-        height: int = 28,
+        bg_color: Optional[str] = None,
+        hover_color: Optional[str] = None,
+        text_color: Optional[str] = None,
+        font_style=("Segoe UI", 10, "bold"),
+        width: int = 78,
+        height: int = 34,
         radius: int = 6,
-        border_color: str = "",
-        state: str = "normal"
+        corner: str = "both",          # both / left / right / none
+        border_color: Optional[str] = None,
+        state: str = "normal",
+        icon: Optional[str] = None,
+        icon_size: int = 14,
+        icon_gap: int = 5,
+        pad_x: int = 10
     ):
         super().__init__(
             parent,
@@ -127,35 +394,52 @@ class ModernButton(tk.Canvas):
             height=height,
             bg=parent["bg"],
             highlightthickness=0,
+            takefocus=1 if state == "normal" else 0,
             cursor="hand2" if state == "normal" else "arrow"
         )
         self.text = text
         self.command = command
-        self.base_bg = bg_color
-        self.hover_bg = hover_color
-        self.text_color = text_color
-        self.border_color = border_color
+        self.base_bg = bg_color or THEME["bg_raise"]
+        self.hover_bg = hover_color or THEME["line_strong"]
+        self.text_color = text_color or THEME["text_hi"]
+        self.border_color = border_color or ""
         self.font_style = font_style
         self.w = width
         self.h = height
         self.radius = radius
+        self.corner = corner
         self.state = state
+        self.icon = icon
+        self.icon_size = icon_size
+        self.icon_gap = icon_gap
+        self.pad_x = pad_x
+        self._focused = False
 
         self.bind("<Enter>", self._on_enter)
         self.bind("<Leave>", self._on_leave)
         self.bind("<Button-1>", self._on_click)
+        self.bind("<FocusIn>", self._on_focus_in)
+        self.bind("<FocusOut>", self._on_focus_out)
+        self.bind("<Return>", self._on_keyboard_activate)
+        self.bind("<space>", self._on_keyboard_activate)
 
         self._render(self.base_bg)
 
     def _render(self, current_bg: str):
         self.delete("all")
-        r = self.radius
-        w, h = self.w, self.h
+        w, h, r = self.w, self.h, self.radius
+        tl = tr = br = bl = True
+        if self.corner == "left":
+            tr = br = False
+        elif self.corner == "right":
+            tl = bl = False
+        elif self.corner == "none":
+            tl = tr = br = bl = False
 
         if self.state == "disabled":
-            fill_c = "#141c2b"
-            text_c = "#475569"
-            outline_c = "#1e293b"
+            fill_c = THEME["bg_panel"]
+            text_c = THEME["text_lo"]
+            outline_c = THEME["line_soft"]
             self.configure(cursor="arrow")
         else:
             fill_c = current_bg
@@ -163,25 +447,42 @@ class ModernButton(tk.Canvas):
             outline_c = self.border_color
             self.configure(cursor="hand2")
 
-        points = [
-            1 + r, 1,
-            w - 1 - r, 1,
-            w - 1, 1,
-            w - 1, 1 + r,
-            w - 1, h - 1 - r,
-            w - 1, h - 1,
-            w - 1 - r, h - 1,
-            1 + r, h - 1,
-            1, h - 1,
-            1, h - 1 - r,
-            1, 1 + r,
-            1, 1,
-        ]
-        self.create_polygon(points, smooth=True, fill=fill_c, outline=outline_c, width=1)
-        self.create_text(w // 2, h // 2, text=self.text, fill=text_c, font=self.font_style)
+        outline_width = 1 if outline_c else 0
+        if self._focused and self.state == "normal":
+            outline_c = THEME["signal"]
+            outline_width = 2
+
+        pts = rounded_rect_points(w - 2, h - 2, r, tl, tr, br, bl)
+        pts = [p + 1 for p in pts]
+        self.create_polygon(pts, fill=fill_c, outline=outline_c,
+                            width=outline_width, joinstyle=tk.ROUND)
+
+        if self.icon and not self.text:
+            draw_icon(self, self.icon, w / 2, h / 2, self.icon_size, text_c)
+        elif self.icon:
+            icon_cx = self.pad_x + self.icon_size / 2
+            draw_icon(self, self.icon, icon_cx, h / 2, self.icon_size, text_c)
+            text_x = self.pad_x + self.icon_size + self.icon_gap
+            self.create_text(text_x, h // 2, text=self.text, fill=text_c,
+                             font=self.font_style, anchor="w")
+        else:
+            self.create_text(w // 2, h // 2, text=self.text, fill=text_c, font=self.font_style)
+
+    def update_style(self, bg_color: str, hover_color: str, text_color: str, border_color: str = "", icon: Optional[str] = None):
+        self.base_bg = bg_color
+        self.hover_bg = hover_color
+        self.text_color = text_color
+        self.border_color = border_color
+        if icon is not None:
+            self.icon = icon
+        self.configure(bg=self.master["bg"])
+        self._render(self.base_bg)
 
     def set_state(self, new_state: str):
         self.state = new_state
+        self.configure(takefocus=1 if new_state == "normal" else 0)
+        if new_state != "normal" and self._focused:
+            self._focused = False
         self._render(self.base_bg)
 
     def _on_enter(self, event):
@@ -193,14 +494,31 @@ class ModernButton(tk.Canvas):
             self._render(self.base_bg)
 
     def _on_click(self, event):
-        if self.state == "normal" and self.command:
-            self.command()
+        if self.state == "normal":
+            self.focus_set()
+            if self.command:
+                self.command()
+
+    def _on_keyboard_activate(self, _event=None):
+        self._on_click(None)
+        return "break"
+
+    def _on_focus_in(self, _event=None):
+        if self.state == "normal":
+            self._focused = True
+            self._render(self.base_bg)
+
+    def _on_focus_out(self, _event=None):
+        if self._focused:
+            self._focused = False
+            self._render(self.base_bg)
 
 
-class StatusBadge(tk.Canvas):
-    """状态指示徽章（发光脉冲质感圆点和文本标签）"""
-    def __init__(self, parent, text: str = "离线", color: str = "#64748b", font_style=("Segoe UI", 9)):
-        super().__init__(parent, width=92, height=26, bg=parent["bg"], highlightthickness=0)
+class LedBadge(tk.Canvas):
+    """LED 状态指示（发光圆点 + 等宽大写丝印文字）"""
+    def __init__(self, parent, text: str = "待命", color: str = "#606C5E",
+                 font_style=("Segoe UI", 8, "bold"), width: int = 108):
+        super().__init__(parent, width=width, height=24, bg=parent["bg"], highlightthickness=0)
         self.text = text
         self.color = color
         self.font_style = font_style
@@ -209,24 +527,52 @@ class StatusBadge(tk.Canvas):
     def update_status(self, text: str, color: str):
         self.text = text
         self.color = color
+        self.configure(bg=self.master["bg"])
         self._render()
 
     def _render(self):
         self.delete("all")
-        # 外层柔和微光
-        self.create_oval(3, 7, 17, 21, fill=self.color, outline="")
-        # 发光内圈核心
-        self.create_oval(6, 10, 14, 18, fill="#ffffff", outline="")
-        self.create_oval(7, 11, 13, 17, fill=self.color, outline="")
-        # 文字
-        self.create_text(24, 14, text=self.text, anchor="w", fill="#cbd5e1", font=self.font_style)
+        self.create_oval(1, 6, 15, 20, fill=self.color, outline="")
+        self.create_oval(4, 9, 12, 17, fill="#FFFFFF", outline="")
+        self.create_oval(5, 10, 11, 16, fill=self.color, outline="")
+        self.create_text(21, 12, text=self.text, anchor="w",
+                         fill=THEME["text_mid"], font=self.font_style)
 
 
-class ModernPanel(tk.Frame):
-    """卡片式现代面板控件（带服务标识、虚拟终端缓冲区、快速胶囊动作）"""
+class MiniLed(tk.Canvas):
+    """导航条服务微型 LED（标签 + 灯点）"""
+    def __init__(self, parent, label: str):
+        super().__init__(parent, width=52, height=16, bg=parent["bg"], highlightthickness=0)
+        self.label = label
+        self.on = False
+        self._render()
+
+    def set_on(self, on: bool):
+        if self.on != on:
+            self.on = on
+            self._render()
+
+    def apply_theme(self):
+        """主题切换时强制重绘，避免 Canvas 残留旧主题底色。"""
+        self.configure(bg=self.master["bg"])
+        self._render()
+
+    def _render(self):
+        self.delete("all")
+        c = THEME["go"] if self.on else THEME["line_strong"]
+        self.configure(bg=self.master["bg"])
+        self.create_oval(1, 4, 9, 12, fill=c, outline="")
+        self.create_text(14, 8, text=self.label, anchor="w",
+                         fill=THEME["text_mid"] if self.on else THEME["text_lo"],
+                         font=("Segoe UI", 8, "bold"))
+
+
+class ServicePanel(tk.Frame):
+    """服务操控面板（丝印编号 + 模块标签 + 启停键组 + 指令芯片 + 终端缓冲区）"""
     def __init__(
         self,
         parent,
+        index: str,
         title: str,
         subtitle: str,
         tag: str,
@@ -240,12 +586,13 @@ class ModernPanel(tk.Frame):
     ):
         super().__init__(
             parent,
-            bg=THEME["bg_card"],
-            highlightbackground=THEME["border_card"],
+            bg=THEME["bg_panel"],
+            highlightbackground=THEME["line_soft"],
             highlightthickness=1,
-            padx=12,
-            pady=12
+            padx=14,
+            pady=14
         )
+        self.index = index
         self.title = title
         self.subtitle = subtitle
         self.tag = tag
@@ -262,6 +609,7 @@ class ModernPanel(tk.Frame):
         self.is_running = False
         self._closing = False
         self._last_rendered_text = ""
+        self.chips: list[DeckButton] = []
 
         self._build_header()
         self._build_toolbar()
@@ -269,213 +617,275 @@ class ModernPanel(tk.Frame):
         if self.allow_input:
             self._build_input_box()
 
+        self.term_buffer.feed(f"就绪 · {self.script_name} 尚未启动\n")
+        self._render_screen()
         self._check_output_loop()
 
     def _build_header(self):
-        head = tk.Frame(self, bg=THEME["bg_card"])
-        head.pack(fill=tk.X, side=tk.TOP, pady=(0, 10))
+        self.head = tk.Frame(self, bg=THEME["bg_panel"])
+        self.head.pack(fill=tk.X, side=tk.TOP, pady=(0, 10))
 
-        # 标题区域与服务分类胶囊
-        title_box = tk.Frame(head, bg=THEME["bg_card"])
-        title_box.pack(side=tk.LEFT, fill=tk.Y)
+        self.left_box = tk.Frame(self.head, bg=THEME["bg_panel"])
+        self.left_box.pack(side=tk.LEFT, fill=tk.Y)
 
-        title_row = tk.Frame(title_box, bg=THEME["bg_card"])
-        title_row.pack(anchor=tk.W)
+        self.row1 = tk.Frame(self.left_box, bg=THEME["bg_panel"])
+        self.row1.pack(anchor=tk.W)
 
-        tag_lbl = tk.Label(
-            title_row,
-            text=f" {self.tag} ",
-            font=("Consolas", 8, "bold"),
-            fg=self.tag_color,
-            bg="#121b2b",
-            padx=3,
-            pady=1
+        self.idx_lbl = tk.Label(
+            self.row1, text=self.index, font=("Consolas", 10, "bold"),
+            fg=THEME["bg_panel"], bg=THEME["signal"], padx=6, pady=2
         )
-        tag_lbl.pack(side=tk.LEFT, padx=(0, 6))
+        self.idx_lbl.pack(side=tk.LEFT, padx=(0, 9), pady=1)
 
-        lbl_title = tk.Label(
-            title_row,
-            text=self.title,
-            font=("Segoe UI", 11, "bold"),
-            fg=THEME["text_main"],
-            bg=THEME["bg_card"]
+        self.tag_lbl = tk.Label(
+            self.row1, text=f" {self.tag} ", font=("Segoe UI", 8, "bold"),
+            fg=self.tag_color, bg=THEME["bg_raise"], padx=5, pady=2
         )
-        lbl_title.pack(side=tk.LEFT)
+        self.tag_lbl.pack(side=tk.LEFT, padx=(0, 8))
 
-        lbl_sub = tk.Label(
-            title_box,
-            text=self.subtitle,
-            font=("Consolas", 8),
-            fg=THEME["text_dim"],
-            bg=THEME["bg_card"]
+        self.lbl_title = tk.Label(
+            self.row1, text=self.title, font=("Segoe UI", 13, "bold"),
+            fg=THEME["text_hi"], bg=THEME["bg_panel"]
         )
-        lbl_sub.pack(anchor=tk.W, pady=(2, 0))
+        self.lbl_title.pack(side=tk.LEFT)
 
-        # 右侧状态指示徽章
-        self.badge = StatusBadge(head, text="待命", color="#64748b")
+        self.lbl_sub = tk.Label(
+            self.left_box, text=self.subtitle, font=("Segoe UI", 9),
+            fg=THEME["text_lo"], bg=THEME["bg_panel"]
+        )
+        self.lbl_sub.pack(anchor=tk.W, pady=(4, 0))
+
+        self.badge = LedBadge(self.head, text="待命", color=THEME["text_lo"])
         self.badge.pack(side=tk.RIGHT, padx=(0, 2))
 
+        self.rule = tk.Frame(self, bg=THEME["line_soft"], height=1)
+        self.rule.pack(fill=tk.X, side=tk.TOP, pady=(0, 10))
+        self.tick = tk.Frame(self.rule, bg=THEME["signal"], width=28, height=1)
+        self.tick.pack(side=tk.LEFT)
+        self.line = tk.Frame(self.rule, bg=THEME["line_soft"], height=1)
+        self.line.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
     def _build_toolbar(self):
-        bar = tk.Frame(self, bg=THEME["bg_card"])
-        bar.pack(fill=tk.X, side=tk.TOP, pady=(0, 8))
+        self.toolbar = tk.Frame(self, bg=THEME["bg_panel"])
+        self.toolbar.pack(fill=tk.X, side=tk.TOP, pady=(0, 8))
 
-        # 启停操作按键
-        self.btn_start = ModernButton(
-            bar, "▶ 启动", command=self.start_process,
-            bg_color="#059669", hover_color="#10b981", text_color="#ffffff",
-            width=64, height=26, radius=5
+        self.btn_start = DeckButton(
+            self.toolbar, "启动", command=self.start_process,
+            bg_color=THEME["go_bg"], hover_color=THEME["go_hover"], text_color="#FFFFFF",
+            width=78, height=34, radius=6, icon="play", icon_size=14
         )
-        self.btn_start.pack(side=tk.LEFT, padx=(0, 4))
+        self.btn_start.pack(side=tk.LEFT, padx=(0, 6))
+        ToolTip(self.btn_start, f"启动 {self.title}")
 
-        self.btn_stop = ModernButton(
-            bar, "⏹ 停止", command=self.stop_process,
-            bg_color="#dc2626", hover_color="#ef4444", text_color="#ffffff",
-            width=64, height=26, radius=5, state="disabled"
+        self.btn_stop = DeckButton(
+            self.toolbar, "停止", command=self.stop_process,
+            bg_color=THEME["danger_bg"], hover_color=THEME["danger_hover"], text_color="#FFFFFF",
+            width=78, height=34, radius=6, state="disabled", icon="stop", icon_size=14
         )
-        self.btn_stop.pack(side=tk.LEFT, padx=(0, 4))
+        self.btn_stop.pack(side=tk.LEFT, padx=(0, 6))
+        ToolTip(self.btn_stop, f"停止 {self.title}")
 
-        self.btn_restart = ModernButton(
-            bar, "🔄 重启", command=self.restart_process,
-            bg_color="#0284c7", hover_color="#38bdf8", text_color="#ffffff",
-            width=64, height=26, radius=5, state="disabled"
+        self.btn_restart = DeckButton(
+            self.toolbar, "重启", command=self.restart_process,
+            bg_color=THEME["bg_raise"], hover_color=THEME["line_strong"],
+            text_color=THEME["signal_on_dark"], border_color=THEME["line_strong"],
+            width=78, height=34, radius=6, state="disabled", icon="restart", icon_size=14
         )
-        self.btn_restart.pack(side=tk.LEFT, padx=(0, 4))
+        self.btn_restart.pack(side=tk.LEFT, padx=(0, 6))
+        ToolTip(self.btn_restart, f"重启 {self.title}")
 
-        # 右侧工具按键
-        self.btn_clear = ModernButton(
-            bar, "清屏", command=self.clear_log,
-            bg_color="#1f2d42", hover_color="#2b3e5c", text_color="#94a3b8",
-            width=48, height=26, radius=5
+        self.btn_clear = DeckButton(
+            self.toolbar, "", command=self.clear_log,
+            bg_color=THEME["bg_raise"], hover_color=THEME["line_strong"],
+            text_color=THEME["text_mid"],
+            width=28, height=28, radius=6, icon="clear", icon_size=13
         )
-        self.btn_clear.pack(side=tk.RIGHT, padx=(4, 0))
+        self.btn_clear.pack(side=tk.RIGHT, padx=(5, 0), pady=2)
+        ToolTip(self.btn_clear, "清空终端缓冲区")
 
-        self.btn_copy = ModernButton(
-            bar, "复制", command=self.copy_log,
-            bg_color="#1f2d42", hover_color="#2b3e5c", text_color="#94a3b8",
-            width=48, height=26, radius=5
+        self.btn_copy = DeckButton(
+            self.toolbar, "", command=self.copy_log,
+            bg_color=THEME["bg_raise"], hover_color=THEME["line_strong"],
+            text_color=THEME["text_mid"],
+            width=28, height=28, radius=6, icon="copy", icon_size=13
         )
-        self.btn_copy.pack(side=tk.RIGHT, padx=0)
+        self.btn_copy.pack(side=tk.RIGHT, pady=2)
+        ToolTip(self.btn_copy, "复制终端输出")
 
-        # 快捷指令胶囊栏
         if self.quick_actions:
-            pill_bar = tk.Frame(self, bg=THEME["bg_card"])
-            pill_bar.pack(fill=tk.X, side=tk.TOP, pady=(0, 8))
+            self.chip_bar = tk.Frame(self, bg=THEME["bg_panel"])
+            self.chip_bar.pack(fill=tk.X, side=tk.TOP, pady=(0, 8))
 
-            tag_lbl = tk.Label(
-                pill_bar,
-                text="快捷操作:",
-                font=("Segoe UI", 8),
-                fg=THEME["text_dim"],
-                bg=THEME["bg_card"]
+            self.cmd_tag = tk.Label(
+                self.chip_bar, text="CMD", font=("Segoe UI", 8, "bold"),
+                fg=THEME["text_lo"], bg=THEME["bg_panel"]
             )
-            tag_lbl.pack(side=tk.LEFT, padx=(0, 6))
+            self.cmd_tag.pack(side=tk.LEFT, padx=(0, 7))
 
             for label, act in self.quick_actions:
                 if callable(act):
                     cmd = act
                 else:
                     cmd = lambda v=act: self.send_input(v)
-                b = ModernButton(
-                    pill_bar,
-                    label,
-                    command=cmd,
-                    bg_color=THEME["btn_pill_bg"],
-                    hover_color="#1e2c45",
-                    text_color=THEME["btn_pill_text"],
-                    border_color=THEME["btn_pill_border"],
-                    font_style=("Segoe UI", 8, "bold"),
-                    width=max(54, len(label) * 11 + 16),
-                    height=24,
-                    radius=4
+                b = DeckButton(
+                    self.chip_bar, label, command=cmd,
+                    bg_color=THEME["chip_bg"], hover_color=THEME["line_strong"],
+                    text_color=THEME["chip_text"], border_color=THEME["chip_border"],
+                    font_style=("Consolas", 9, "bold"),
+                    width=max(54, len(label) * 10 + 16), height=24, radius=4
                 )
-                b.pack(side=tk.LEFT, padx=(0, 4))
+                b.pack(side=tk.LEFT, padx=(0, 5))
+                ToolTip(b, "点击下发指令到服务终端")
+                self.chips.append(b)
 
     def _build_terminal(self):
-        # 拟真终端容器（带有微暗背景与内衬修饰）
-        term_wrap = tk.Frame(
+        self.term_wrap = tk.Frame(
             self,
-            bg=THEME["bg_card_inner"],
-            highlightbackground=THEME["border_card"],
+            bg=THEME["bg_inset"],
+            highlightbackground=THEME["line_soft"],
             highlightthickness=1
         )
-        term_wrap.pack(fill=tk.BOTH, expand=True, side=tk.TOP)
+        self.term_wrap.pack(fill=tk.BOTH, expand=True, side=tk.TOP)
+
+        self.term_head = tk.Frame(self.term_wrap, bg=THEME["bg_inset"], padx=10, pady=5)
+        self.term_head.pack(fill=tk.X, side=tk.TOP)
+        self.term_prompt = tk.Label(
+            self.term_head, text="▍", font=("Segoe UI", 9, "bold"),
+            fg=THEME["signal"], bg=THEME["bg_inset"]
+        )
+        self.term_prompt.pack(side=tk.LEFT)
+        self.term_script_lbl = tk.Label(
+            self.term_head, text="LOG  " + self.script_name, font=("Consolas", 9),
+            fg=THEME["text_lo"], bg=THEME["bg_inset"]
+        )
+        self.term_script_lbl.pack(side=tk.LEFT, padx=(1, 0))
+
+        self.head_sep = tk.Frame(self.term_wrap, bg=THEME["line_soft"], height=1)
+        self.head_sep.pack(fill=tk.X, side=tk.TOP)
 
         font_family = "Cascadia Code" if "Cascadia Code" in tkfont.families() else "Consolas"
         self.log_text = tk.Text(
-            term_wrap,
+            self.term_wrap,
             wrap=tk.CHAR,
-            bg=THEME["bg_card_inner"],
-            fg=THEME["terminal_text"],
-            insertbackground="#38bdf8",
-            selectbackground="#26334d",
-            selectforeground="#ffffff",
-            font=(font_family, 9),
+            bg=THEME["bg_inset"],
+            fg=THEME["term_text"],
+            insertbackground=THEME["signal"],
+            selectbackground=THEME["signal"],
+            selectforeground=THEME["bg_panel"],
+            font=(font_family, 10),
             relief=tk.FLAT,
-            padx=10,
-            pady=8,
+            padx=12,
+            pady=10,
             state=tk.DISABLED
         )
-        scrollbar = tk.Scrollbar(
-            term_wrap,
+        self.scrollbar = tk.Scrollbar(
+            self.term_wrap,
             orient=tk.VERTICAL,
             command=self.log_text.yview,
-            bg=THEME["bg_card_inner"],
-            troughcolor=THEME["bg_card_inner"],
+            bg=THEME["bg_inset"],
+            troughcolor=THEME["bg_inset"],
             relief=tk.FLAT,
             width=9
         )
-        self.log_text.configure(yscrollcommand=scrollbar.set)
+        self.log_text.configure(yscrollcommand=self.scrollbar.set)
 
         self.log_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
     def _build_input_box(self):
-        box_frame = tk.Frame(self, bg=THEME["bg_card"])
-        box_frame.pack(fill=tk.X, side=tk.BOTTOM, pady=(8, 0))
+        self.box_frame = tk.Frame(self, bg=THEME["bg_panel"])
+        self.box_frame.pack(fill=tk.X, side=tk.BOTTOM, pady=(8, 0))
 
         self.entry_var = tk.StringVar()
-        entry_wrap = tk.Frame(
-            box_frame,
-            bg=THEME["bg_card_inner"],
-            highlightbackground=THEME["border_card"],
+        self.entry_wrap = tk.Frame(
+            self.box_frame,
+            bg=THEME["bg_inset"],
+            highlightbackground=THEME["line_soft"],
             highlightthickness=1,
             padx=8,
             pady=2
         )
-        entry_wrap.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+        self.entry_wrap.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
 
-        prompt_icon = tk.Label(
-            entry_wrap,
-            text="❯",
-            font=("Consolas", 10, "bold"),
-            fg=THEME["accent_blue"],
-            bg=THEME["bg_card_inner"]
+        self.prompt_icon = tk.Label(
+            self.entry_wrap, text="▍", font=("Segoe UI", 10, "bold"),
+            fg=THEME["signal"], bg=THEME["bg_inset"]
         )
-        prompt_icon.pack(side=tk.LEFT, padx=(0, 4))
+        self.prompt_icon.pack(side=tk.LEFT, padx=(0, 5))
 
         self.entry_input = tk.Entry(
-            entry_wrap,
+            self.entry_wrap,
             textvariable=self.entry_var,
-            bg=THEME["bg_card_inner"],
-            fg=THEME["text_main"],
-            insertbackground=THEME["accent_blue"],
+            bg=THEME["bg_inset"],
+            fg=THEME["term_text"],
+            insertbackground=THEME["signal"],
+            selectbackground=THEME["signal"],
+            selectforeground=THEME["bg_panel"],
             relief=tk.FLAT,
-            font=("Segoe UI", 9)
+            font=("Consolas", 10)
         )
         self.entry_input.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self.entry_input.bind("<Return>", lambda e: self._on_submit())
 
-        btn_send = ModernButton(
-            box_frame,
-            "发送",
-            command=self._on_submit,
-            bg_color=THEME["btn_bg"],
-            hover_color=THEME["accent_blue_hover"],
-            width=58,
-            height=28,
-            radius=4
+        self.btn_send = DeckButton(
+            self.box_frame, "发送", command=self._on_submit,
+            bg_color=THEME["signal"], hover_color=THEME["signal_hover"],
+            text_color=THEME["bg_panel"],
+            width=72, height=32, radius=6, icon="send", icon_size=13
         )
-        btn_send.pack(side=tk.RIGHT)
+        self.btn_send.pack(side=tk.RIGHT)
+        ToolTip(self.btn_send, "发送指令到服务 stdin")
+
+    def apply_theme(self):
+        """随全局主题动态更新本面板各层控件"""
+        self.configure(bg=THEME["bg_panel"], highlightbackground=THEME["line_soft"])
+        self.head.configure(bg=THEME["bg_panel"])
+        self.left_box.configure(bg=THEME["bg_panel"])
+        self.row1.configure(bg=THEME["bg_panel"])
+        self.idx_lbl.configure(bg=THEME["signal"], fg=THEME["bg_panel"])
+        self.tag_lbl.configure(bg=THEME["bg_raise"], fg=self.tag_color)
+        self.lbl_title.configure(bg=THEME["bg_panel"], fg=THEME["text_hi"])
+        self.lbl_sub.configure(bg=THEME["bg_panel"], fg=THEME["text_lo"])
+        self.badge.update_status(self.badge.text, self.badge.color)
+        self.rule.configure(bg=THEME["line_soft"])
+        self.tick.configure(bg=THEME["signal"])
+        self.line.configure(bg=THEME["line_soft"])
+        self.toolbar.configure(bg=THEME["bg_panel"])
+
+        self.btn_start.update_style(THEME["go_bg"], THEME["go_hover"], "#FFFFFF")
+        self.btn_stop.update_style(THEME["danger_bg"], THEME["danger_hover"], "#FFFFFF")
+        self.btn_restart.update_style(THEME["bg_raise"], THEME["line_strong"], THEME["signal_on_dark"], border_color=THEME["line_strong"])
+        self.btn_clear.update_style(THEME["bg_raise"], THEME["line_strong"], THEME["text_mid"])
+        self.btn_copy.update_style(THEME["bg_raise"], THEME["line_strong"], THEME["text_mid"])
+
+        if hasattr(self, "chip_bar"):
+            self.chip_bar.configure(bg=THEME["bg_panel"])
+            self.cmd_tag.configure(bg=THEME["bg_panel"], fg=THEME["text_lo"])
+            for c in self.chips:
+                c.update_style(THEME["chip_bg"], THEME["line_strong"], THEME["chip_text"], border_color=THEME["chip_border"])
+
+        self.term_wrap.configure(bg=THEME["bg_inset"], highlightbackground=THEME["line_soft"])
+        self.term_head.configure(bg=THEME["bg_inset"])
+        self.term_prompt.configure(bg=THEME["bg_inset"], fg=THEME["signal"])
+        self.term_script_lbl.configure(bg=THEME["bg_inset"], fg=THEME["text_lo"])
+        self.head_sep.configure(bg=THEME["line_soft"])
+        self.log_text.configure(
+            bg=THEME["bg_inset"], fg=THEME["term_text"],
+            insertbackground=THEME["signal"],
+            selectbackground=THEME["signal"], selectforeground=THEME["bg_panel"]
+        )
+        self.scrollbar.configure(bg=THEME["bg_inset"], troughcolor=THEME["bg_inset"])
+
+        if self.allow_input:
+            self.box_frame.configure(bg=THEME["bg_panel"])
+            self.entry_wrap.configure(bg=THEME["bg_inset"], highlightbackground=THEME["line_soft"])
+            self.prompt_icon.configure(bg=THEME["bg_inset"], fg=THEME["signal"])
+            self.entry_input.configure(
+                bg=THEME["bg_inset"], fg=THEME["term_text"],
+                insertbackground=THEME["signal"],
+                selectbackground=THEME["signal"], selectforeground=THEME["bg_panel"]
+            )
+            self.btn_send.update_style(THEME["signal"], THEME["signal_hover"], THEME["bg_panel"])
 
     def _render_screen(self):
         new_text = self.term_buffer.get_display_text()
@@ -494,13 +904,19 @@ class ModernPanel(tk.Frame):
         self.log_text.configure(state=tk.NORMAL)
         self.log_text.delete("1.0", tk.END)
         self.log_text.configure(state=tk.DISABLED)
+        if self.is_running and self.process and self.process.stdin and self.allow_input:
+            try:
+                self.process.stdin.write(b"cls\n")
+                self.process.stdin.flush()
+            except Exception:
+                pass
 
     def copy_log(self):
         text = self.term_buffer.get_display_text()
         if text:
             self.clipboard_clear()
             self.clipboard_append(text)
-            self.term_buffer.feed("✦ [提示] 控制台日志已复制到剪贴板\n")
+            self.term_buffer.feed("› [deck] 终端输出已复制到剪贴板\n")
             self._render_screen()
 
     def start_process(self):
@@ -511,14 +927,14 @@ class ModernPanel(tk.Frame):
         if not os.path.exists(target_file):
             self.term_buffer.feed(f"[Error] 未找到脚本: {target_file}\n")
             self._render_screen()
-            self.badge.update_status("文件丢失", THEME["accent_red"])
+            self.badge.update_status("缺失", THEME["danger"])
             if self.on_status_change:
                 self.on_status_change()
             return
 
-        self.term_buffer.feed(f"✦ 正在载入任务: {self.title}\n")
+        self.term_buffer.feed(f"› 载入任务模块: {self.title}\n")
         self._render_screen()
-        self.badge.update_status("运行中", THEME["accent_green"])
+        self.badge.update_status("运行中", THEME["go"])
         self.btn_start.set_state("disabled")
         self.btn_stop.set_state("normal")
         self.btn_restart.set_state("normal")
@@ -536,7 +952,7 @@ class ModernPanel(tk.Frame):
             if os.name == "nt":
                 startupinfo = subprocess.STARTUPINFO()
                 startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                startupinfo.wShowWindow = 0  # SW_HIDE
+                startupinfo.wShowWindow = 0
                 creationflags = (
                     subprocess.CREATE_NEW_PROCESS_GROUP
                     | subprocess.CREATE_NO_WINDOW
@@ -562,29 +978,38 @@ class ModernPanel(tk.Frame):
         threading.Thread(target=self._reader_thread, args=(self.process,), daemon=True).start()
 
     def _reader_thread(self, proc: subprocess.Popen):
-        decoder_buf = b""
+        utf8_decoder = codecs.getincrementaldecoder("utf-8")()
+        gbk_decoder = codecs.getincrementaldecoder("gbk")()
+        use_gbk = False
+
         while True:
             try:
-                chunk = proc.stdout.read(64)
+                chunk = proc.stdout.read(1024)
                 if not chunk:
                     break
-                decoder_buf += chunk
-                try:
-                    text = decoder_buf.decode("utf-8")
-                    decoder_buf = b""
-                except UnicodeDecodeError:
+                if not use_gbk:
                     try:
-                        text = decoder_buf.decode("gbk")
-                        decoder_buf = b""
+                        text = utf8_decoder.decode(chunk)
+                        if text:
+                            self.output_queue.put(text)
                     except UnicodeDecodeError:
-                        continue
-                self.output_queue.put(text)
+                        use_gbk = True
+                        text = gbk_decoder.decode(chunk, final=False)
+                        if text:
+                            self.output_queue.put(text)
+                else:
+                    text = gbk_decoder.decode(chunk, final=False)
+                    if text:
+                        self.output_queue.put(text)
             except Exception:
                 break
 
-        if decoder_buf:
-            text = decoder_buf.decode("utf-8", errors="replace")
-            self.output_queue.put(text)
+        try:
+            rem = gbk_decoder.decode(b"", final=True) if use_gbk else utf8_decoder.decode(b"", final=True)
+            if rem:
+                self.output_queue.put(rem)
+        except Exception:
+            pass
 
         exit_code = proc.wait()
         self.output_queue.put(("__PROCESS_EXIT__", exit_code))
@@ -611,11 +1036,11 @@ class ModernPanel(tk.Frame):
     def _on_process_ended(self, exit_code: int):
         self.is_running = False
         self.process = None
-        self.badge.update_status("已停止", THEME["accent_red"])
+        self.badge.update_status("已停止", THEME["danger"])
         self.btn_start.set_state("normal")
         self.btn_stop.set_state("disabled")
         self.btn_restart.set_state("disabled")
-        self.term_buffer.feed(f"\n✦ 进程安全停止 (返回码: {exit_code})\n")
+        self.term_buffer.feed(f"\n› 进程已停止 (返回码: {exit_code})\n")
         self._render_screen()
         if self.on_status_change:
             self.on_status_change()
@@ -625,10 +1050,14 @@ class ModernPanel(tk.Frame):
             self.term_buffer.feed("[提示] 服务未运行\n")
             self._render_screen()
             return
+
+        clean_text = text.strip()
+        if clean_text.lower() in ("cls", "clear"):
+            self.clear_log()
+            return
+
         try:
-            self.term_buffer.feed(f"\n>>> 指令发送: {text}\n")
-            self._render_screen()
-            payload = f"{text}\n".encode("utf-8")
+            payload = f"{clean_text}\n".encode("utf-8")
             self.process.stdin.write(payload)
             self.process.stdin.flush()
         except Exception as exc:
@@ -644,7 +1073,7 @@ class ModernPanel(tk.Frame):
     def stop_process(self):
         if not self.is_running or not self.process:
             return
-        self.term_buffer.feed("✦ 正在终止进程树...\n")
+        self.term_buffer.feed("› 正在终止进程树...\n")
         self._render_screen()
         try:
             if os.name == "nt":
@@ -708,134 +1137,156 @@ Get-CimInstance Win32_Process | Where-Object {{
         pass
 
 
-class ModernConsoleApp(tk.Tk):
+class FieldDeckApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Nexus Control Studio · 服务集成控制中心")
-        self.geometry("1480x880")
-        self.minsize(1080, 640)
-        self.configure(bg=THEME["bg_main"])
+        self.current_theme_name = "light"
+        global THEME
+        THEME = THEMES[self.current_theme_name]
 
-        # 注入 Windows 原生深色标题栏
-        apply_dark_titlebar(self)
+        self.title("Nexus · 服务集成操控台")
+        self.geometry("1440x900")
+        self.minsize(1280, 820)
+        self.configure(bg=THEME["bg_deepest"])
 
-        self._build_top_navbar()
-        self._build_main_grid()
+        apply_window_icon(self)
+        apply_titlebar_theme(self, is_dark=False)
+
+        self._build_command_bar()
         self._build_status_bar()
+        self._build_main_grid()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
-        # 启动后更新服务状态汇总并依次自动加载运行
         self.update_services_summary()
         self.after(300, self.start_all)
         self._start_clock_timer()
 
-    def _build_top_navbar(self):
-        nav = tk.Frame(
-            self,
-            bg=THEME["bg_navbar"],
-            padx=20,
-            pady=14
+    def _build_command_bar(self):
+        self.nav = tk.Frame(self, bg=THEME["bg_panel"], padx=20, pady=10)
+        self.nav.pack(fill=tk.X, side=tk.TOP)
+
+        # 品牌区：工业橙字标 + 双行产品名
+        self.brand_frame = tk.Frame(self.nav, bg=THEME["bg_panel"])
+        self.brand_frame.pack(side=tk.LEFT)
+
+        self.brand_cv = tk.Canvas(self.brand_frame, width=36, height=36,
+                                  bg=THEME["bg_panel"], highlightthickness=0)
+        draw_brand_mark(self.brand_cv, 36, THEME["signal"], THEME["bg_panel"])
+        self.brand_cv.pack(side=tk.LEFT, padx=(0, 11))
+
+        self.brand_text = tk.Frame(self.brand_frame, bg=THEME["bg_panel"])
+        self.brand_text.pack(side=tk.LEFT)
+        self.title_lbl = tk.Label(
+            self.brand_text, text="Nexus",
+            font=("Segoe UI", 20, "bold"), anchor=tk.W,
+            fg=THEME["text_hi"], bg=THEME["bg_panel"]
         )
-        nav.pack(fill=tk.X, side=tk.TOP)
-
-        # 品牌 LOGO 与主标
-        brand_frame = tk.Frame(nav, bg=THEME["bg_navbar"])
-        brand_frame.pack(side=tk.LEFT)
-
-        icon_lbl = tk.Label(
-            brand_frame,
-            text="◈",
-            font=("Segoe UI Symbol", 15, "bold"),
-            fg=THEME["accent_blue"],
-            bg=THEME["bg_navbar"]
+        self.title_lbl.pack(anchor=tk.W)
+        self.brand_sub = tk.Label(
+            self.brand_text, text="SERVICE CONTROL WORKSPACE",
+            font=("Segoe UI", 8, "bold"), anchor=tk.W,
+            fg=THEME["text_lo"], bg=THEME["bg_panel"]
         )
-        icon_lbl.pack(side=tk.LEFT, padx=(0, 8))
+        self.brand_sub.pack(anchor=tk.W)
 
-        title_lbl = tk.Label(
-            brand_frame,
-            text="NEXUS CONTROL STUDIO",
-            font=("Segoe UI", 12, "bold"),
-            fg=THEME["text_main"],
-            bg=THEME["bg_navbar"]
-        )
-        title_lbl.pack(side=tk.LEFT)
-
-        badge_sub = tk.Label(
-            brand_frame,
-            text=" v3.0 PRO ",
+        self.badge_sub = tk.Label(
+            self.brand_frame, text=" LOCAL / SERVICE ",
             font=("Consolas", 8, "bold"),
-            fg=THEME["accent_blue"],
-            bg="#172338",
-            padx=5,
-            pady=2
+            fg=THEME["chip_text"], bg=THEME["chip_bg"],
+            padx=6, pady=3,
+            highlightbackground=THEME["chip_border"], highlightthickness=1
         )
-        badge_sub.pack(side=tk.LEFT, padx=(8, 12))
+        self.badge_sub.pack(side=tk.LEFT, padx=(16, 0), pady=2)
 
-        # 中间全局服务运行状态计数指示
+        self.brand_sep = tk.Frame(self.nav, bg=THEME["line_soft"], width=1, height=28)
+        self.brand_sep.pack(side=tk.LEFT, padx=(18, 0))
+
+        # 中部：服务 LED 组 + 汇总
+        self.mid = tk.Frame(self.nav, bg=THEME["bg_panel"])
+        self.mid.pack(side=tk.LEFT, padx=(18, 0))
+
+        self.led_vps = MiniLed(self.mid, "VPS")
+        self.led_vps.pack(side=tk.LEFT, padx=(0, 4))
+        self.led_proxy = MiniLed(self.mid, "PROXY")
+        self.led_proxy.pack(side=tk.LEFT, padx=(0, 4))
+        self.led_bt = MiniLed(self.mid, "BT")
+        self.led_bt.pack(side=tk.LEFT, padx=(0, 12))
+
         self.summary_badge = tk.Label(
-            brand_frame,
-            text="● 正在初始化服务...",
+            self.mid, text="正在初始化…",
             font=("Segoe UI", 9, "bold"),
-            fg=THEME["text_dim"],
-            bg="#111a29",
-            padx=10,
-            pady=3
+            fg=THEME["text_lo"], bg=THEME["bg_panel"]
         )
-        self.summary_badge.pack(side=tk.LEFT, padx=(0, 10))
+        self.summary_badge.pack(side=tk.LEFT)
 
-        # 右侧全局控制按键
-        ctrl_frame = tk.Frame(nav, bg=THEME["bg_navbar"])
-        ctrl_frame.pack(side=tk.RIGHT)
+        # 右侧：皮肤切换按钮 + 分段式全局控制键组
+        self.ctrl = tk.Frame(self.nav, bg=THEME["bg_panel"])
+        self.ctrl.pack(side=tk.RIGHT)
 
-        btn_all_start = ModernButton(
-            ctrl_frame, "▶ 全部启动", command=self.start_all,
-            bg_color="#059669", hover_color="#10b981", text_color="#ffffff",
-            width=84, height=28, radius=6
+        # 主题切换与分段式全局控制键组
+        self.btn_theme = DeckButton(
+            self.ctrl, "深色模式", command=self.toggle_theme,
+            bg_color=THEME["bg_raise"], hover_color=THEME["line_strong"],
+            text_color=THEME["text_hi"], border_color=THEME["line_soft"],
+            width=100, height=34, radius=6, corner="both",
+            icon="moon", icon_size=14, pad_x=10
         )
-        btn_all_start.pack(side=tk.LEFT, padx=4)
+        self.btn_theme.pack(side=tk.LEFT, padx=(0, 12))
+        ToolTip(self.btn_theme, "切换浅色 / 深色主题")
 
-        btn_all_restart = ModernButton(
-            ctrl_frame, "🔄 全量重启", command=self.restart_all,
-            bg_color="#0284c7", hover_color="#38bdf8", text_color="#ffffff",
-            width=84, height=28, radius=6
+        self.btn_all_start = DeckButton(
+            self.ctrl, "全部启动", command=self.start_all,
+            bg_color=THEME["go_bg"], hover_color=THEME["go_hover"], text_color="#FFFFFF",
+            width=102, height=34, radius=6, corner="left",
+            icon="play-all", icon_size=15, pad_x=11
         )
-        btn_all_restart.pack(side=tk.LEFT, padx=4)
+        self.btn_all_start.pack(side=tk.LEFT)
+        ToolTip(self.btn_all_start, "依次启动全部服务")
 
-        btn_all_stop = ModernButton(
-            ctrl_frame, "⏹ 全部停止", command=self.stop_all,
-            bg_color="#dc2626", hover_color="#ef4444", text_color="#ffffff",
-            width=84, height=28, radius=6
+        self.btn_all_restart = DeckButton(
+            self.ctrl, "全量重启", command=self.restart_all,
+            bg_color=THEME["bg_raise"], hover_color=THEME["line_strong"],
+            text_color=THEME["signal_on_dark"], border_color=THEME["line_strong"],
+            width=102, height=34, radius=6, corner="none",
+            icon="restart-all", icon_size=15, pad_x=11
         )
-        btn_all_stop.pack(side=tk.LEFT, padx=4)
+        self.btn_all_restart.pack(side=tk.LEFT, padx=(1, 0))
+        ToolTip(self.btn_all_restart, "重启全部服务")
 
-        # 顶部微细分割线
-        sep = tk.Frame(self, bg=THEME["border_card"], height=1)
-        sep.pack(fill=tk.X, side=tk.TOP)
+        self.btn_all_stop = DeckButton(
+            self.ctrl, "全部停止", command=self.stop_all,
+            bg_color=THEME["danger_bg"], hover_color=THEME["danger_hover"], text_color="#FFFFFF",
+            width=102, height=34, radius=6, corner="right",
+            icon="stop-all", icon_size=15, pad_x=11
+        )
+        self.btn_all_stop.pack(side=tk.LEFT, padx=(1, 0))
+        ToolTip(self.btn_all_stop, "终止全部运行中的服务")
+
+        self.sep = tk.Frame(self, bg=THEME["line_soft"], height=1)
+        self.sep.pack(fill=tk.X, side=tk.TOP)
 
     def _build_main_grid(self):
-        # 容器内边距
-        content_frame = tk.Frame(self, bg=THEME["bg_main"], padx=14, pady=14)
-        content_frame.pack(fill=tk.BOTH, expand=True)
+        self.content_frame = tk.Frame(self, bg=THEME["bg_deepest"], padx=20, pady=16)
+        self.content_frame.pack(fill=tk.BOTH, expand=True)
 
-        # 3 列均等网格布局
-        content_frame.grid_columnconfigure(0, weight=1, uniform="panels")
-        content_frame.grid_columnconfigure(1, weight=1, uniform="panels")
-        content_frame.grid_columnconfigure(2, weight=1, uniform="panels")
-        content_frame.grid_rowconfigure(0, weight=1)
+        self.content_frame.grid_columnconfigure(0, weight=1, uniform="panels")
+        self.content_frame.grid_columnconfigure(1, weight=1, uniform="panels")
+        self.content_frame.grid_columnconfigure(2, weight=1, uniform="panels")
+        self.content_frame.grid_rowconfigure(0, weight=1)
 
-        # 面板 1: VPS 控制台
         vps_actions = [
-            ("唤醒 (1)", "1"),
-            ("休眠 (2)", "2"),
-            ("关机 (3)", "3"),
-            ("远程桌面 (4)", "4"),
+            ("唤醒 [1]", "1"),
+            ("休眠 [2]", "2"),
+            ("关机 [3]", "3"),
+            ("远程桌面 [4]", "4"),
         ]
-        self.panel_vps = ModernPanel(
-            content_frame,
+        self.panel_vps = ServicePanel(
+            self.content_frame,
+            index="01",
             title="VPS 云节点控制",
-            subtitle="vpscodex.py · Selenium Driver",
+            subtitle="vpscodex.py · SELENIUM DRIVER",
             tag="CLOUD",
-            tag_color="#a78bfa",
+            tag_color=THEME["violet"],
             script_name="vpscodex.py",
             cmd_list=[sys.executable, "-u", "vpscodex.py"],
             allow_input=True,
@@ -845,20 +1296,20 @@ class ModernConsoleApp(tk.Tk):
         )
         self.panel_vps.grid(row=0, column=0, sticky="nsew", padx=6)
 
-        # 面板 2: 系统代理监控
         proxy_actions = [
-            ("10808", "1"),
-            ("9990", "2"),
-            ("8890", "3"),
-            ("20808", "4"),
-            ("7897", "5"),
+            ("20808", "127.0.0.1:20808"),
+            ("9990", "127.0.0.1:9990"),
+            ("8890", "127.0.0.1:8890"),
+            ("10889", "127.0.0.1:10889"),
+            ("7897", "127.0.0.1:7897"),
         ]
-        self.panel_proxy = ModernPanel(
-            content_frame,
+        self.panel_proxy = ServicePanel(
+            self.content_frame,
+            index="02",
             title="系统代理守候",
-            subtitle="systemproxy_watcher.py · Registry WinINet",
+            subtitle="systemproxy_watcher.py · WININET",
             tag="PROXY",
-            tag_color="#38bdf8",
+            tag_color=THEME["info"],
             script_name="systemproxy_watcher.py",
             cmd_list=[sys.executable, "-u", "systemproxy_watcher.py"],
             allow_input=True,
@@ -868,15 +1319,15 @@ class ModernConsoleApp(tk.Tk):
         )
         self.panel_proxy.grid(row=0, column=1, sticky="nsew", padx=6)
 
-        # 面板 3: 蓝牙保活服务
-        self.panel_bt = ModernPanel(
-            content_frame,
+        self.panel_bt = ServicePanel(
+            self.content_frame,
+            index="03",
             title="蓝牙连接保活",
-            subtitle="bluetooth.ps1 · PnP Power",
+            subtitle="bluetooth.ps1 · PNP POWER",
             tag="SYSTEM",
-            tag_color="#34d399",
+            tag_color=THEME["go"],
             script_name="bluetooth.bat",
-            cmd_list=["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "bluetooth.ps1", "-Elevated"],
+            cmd_list=["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; & './bluetooth.ps1' -Elevated"],
             allow_input=False,
             max_buffer_rows=32,
             on_status_change=self.update_services_summary
@@ -886,48 +1337,51 @@ class ModernConsoleApp(tk.Tk):
         self.panels = [self.panel_vps, self.panel_proxy, self.panel_bt]
 
     def _build_status_bar(self):
-        # 底部状态栏分割线
-        sep = tk.Frame(self, bg=THEME["border_card"], height=1)
-        sep.pack(fill=tk.X, side=tk.BOTTOM)
+        self.sep_status = tk.Frame(self, bg=THEME["line_soft"], height=1)
+        self.sep_status.pack(fill=tk.X, side=tk.BOTTOM)
 
-        bar = tk.Frame(self, bg=THEME["bg_navbar"], padx=16, pady=6)
-        bar.pack(fill=tk.X, side=tk.BOTTOM)
+        self.status_bar = tk.Frame(self, bg=THEME["bg_panel"], padx=20, pady=8)
+        self.status_bar.pack(fill=tk.X, side=tk.BOTTOM)
 
-        # 左侧权限指示
         is_admin = False
         try:
             is_admin = (ctypes.windll.shell32.IsUserAnAdmin() != 0) if os.name == "nt" else True
         except Exception:
             pass
+        self._is_admin = is_admin
 
-        priv_text = "● 管理员特权运行" if is_admin else "○ 标准用户权限"
-        priv_color = THEME["accent_green"] if is_admin else THEME["accent_amber"]
-        lbl_priv = tk.Label(
-            bar,
-            text=priv_text,
-            font=("Segoe UI", 8, "bold"),
-            fg=priv_color,
-            bg=THEME["bg_navbar"]
+        self.priv_led = tk.Canvas(self.status_bar, width=10, height=10, bg=THEME["bg_panel"], highlightthickness=0)
+        self.priv_led.create_oval(1, 1, 9, 9, fill=THEME["go"] if is_admin else THEME["warn"], outline="")
+        self.priv_led.pack(side=tk.LEFT, padx=(0, 6), pady=2)
+
+        self.lbl_priv = tk.Label(
+            self.status_bar,
+            text="管理员权限" if is_admin else "标准用户",
+            font=("Segoe UI", 9, "bold"),
+            fg=THEME["go"] if is_admin else THEME["warn"],
+            bg=THEME["bg_panel"]
         )
-        lbl_priv.pack(side=tk.LEFT, padx=(0, 16))
+        self.lbl_priv.pack(side=tk.LEFT, padx=(0, 18))
 
-        # 中间快捷说明
-        lbl_hint = tk.Label(
-            bar,
-            text="快捷提示: 双击快捷胶囊下发指令 · 各服务支持独立 ANSI 字符缓冲区与 \\r 刷新",
-            font=("Segoe UI", 8),
-            fg=THEME["text_dim"],
-            bg=THEME["bg_navbar"]
+        self.lbl_count = tk.Label(
+            self.status_bar, text="服务 0/3 在线",
+            font=("Segoe UI", 9, "bold"),
+            fg=THEME["text_mid"], bg=THEME["bg_panel"]
         )
-        lbl_hint.pack(side=tk.LEFT)
+        self.lbl_count.pack(side=tk.LEFT, padx=(0, 18))
 
-        # 右侧实时时钟
+        self.lbl_hint = tk.Label(
+            self.status_bar,
+            text="Tab 切换按钮 · Enter 激活 · 所有服务常驻显示",
+            font=("Segoe UI", 9),
+            fg=THEME["text_lo"], bg=THEME["bg_panel"]
+        )
+        self.lbl_hint.pack(side=tk.LEFT)
+
         self.lbl_clock = tk.Label(
-            bar,
-            text=time.strftime("%Y-%m-%d %H:%M:%S"),
-            font=("Consolas", 8),
-            fg=THEME["text_sub"],
-            bg=THEME["bg_navbar"]
+            self.status_bar, text=time.strftime("%Y-%m-%d %H:%M:%S"),
+            font=("Consolas", 10, "bold"),
+            fg=THEME["text_mid"], bg=THEME["bg_panel"]
         )
         self.lbl_clock.pack(side=tk.RIGHT)
 
@@ -936,25 +1390,106 @@ class ModernConsoleApp(tk.Tk):
             self.lbl_clock.configure(text=time.strftime("%Y-%m-%d %H:%M:%S"))
             self.after(1000, self._start_clock_timer)
 
+    def toggle_theme(self):
+        """在暗色模式与明亮模式之间平滑切换"""
+        self.current_theme_name = "light" if self.current_theme_name == "dark" else "dark"
+        global THEME
+        THEME = THEMES[self.current_theme_name]
+
+        # 1. 窗口及外层容器背景
+        self.configure(bg=THEME["bg_deepest"])
+        self.nav.configure(bg=THEME["bg_panel"])
+        self.brand_frame.configure(bg=THEME["bg_panel"])
+        self.brand_cv.configure(bg=THEME["bg_panel"])
+        draw_brand_mark(self.brand_cv, 36, THEME["signal"], THEME["bg_panel"])
+
+        self.brand_text.configure(bg=THEME["bg_panel"])
+        self.title_lbl.configure(bg=THEME["bg_panel"], fg=THEME["text_hi"])
+        self.brand_sub.configure(bg=THEME["bg_panel"], fg=THEME["text_lo"])
+        self.badge_sub.configure(
+            bg=THEME["chip_bg"], fg=THEME["chip_text"],
+            highlightbackground=THEME["chip_border"]
+        )
+        self.brand_sep.configure(bg=THEME["line_soft"])
+        self.mid.configure(bg=THEME["bg_panel"])
+        self.led_vps.apply_theme()
+        self.led_proxy.apply_theme()
+        self.led_bt.apply_theme()
+        self.summary_badge.configure(bg=THEME["bg_panel"])
+        self.ctrl.configure(bg=THEME["bg_panel"])
+        self.sep.configure(bg=THEME["line_soft"])
+
+        # 2. 皮肤切换按键状态与文案
+        if self.current_theme_name == "dark":
+            self.btn_theme.text = "浅色模式"
+            self.btn_theme.update_style(
+                THEME["bg_raise"], THEME["line_strong"], THEME["text_hi"],
+                border_color=THEME["line_soft"], icon="sun"
+            )
+        else:
+            self.btn_theme.text = "深色模式"
+            self.btn_theme.update_style(
+                THEME["bg_raise"], THEME["line_strong"], THEME["text_hi"],
+                border_color=THEME["line_soft"], icon="moon"
+            )
+
+        # 3. 全局启停键组
+        self.btn_all_start.update_style(THEME["go_bg"], THEME["go_hover"], "#FFFFFF")
+        self.btn_all_restart.update_style(THEME["bg_raise"], THEME["line_strong"], THEME["signal_on_dark"], border_color=THEME["line_strong"])
+        self.btn_all_stop.update_style(THEME["danger_bg"], THEME["danger_hover"], "#FFFFFF")
+
+        # 4. 中间网格容器与 3 个服务面板
+        self.content_frame.configure(bg=THEME["bg_deepest"])
+        for p in self.panels:
+            p.apply_theme()
+
+        # 5. 底部状态栏
+        self.sep_status.configure(bg=THEME["line_soft"])
+        self.status_bar.configure(bg=THEME["bg_panel"])
+        self.priv_led.configure(bg=THEME["bg_panel"])
+        self.priv_led.itemconfigure(1, fill=THEME["go"] if self._is_admin else THEME["warn"])
+        self.lbl_priv.configure(
+            bg=THEME["bg_panel"],
+            fg=THEME["go"] if self._is_admin else THEME["warn"]
+        )
+        self.lbl_count.configure(bg=THEME["bg_panel"], fg=THEME["text_mid"])
+        self.lbl_hint.configure(bg=THEME["bg_panel"], fg=THEME["text_lo"])
+        self.lbl_clock.configure(bg=THEME["bg_panel"], fg=THEME["text_mid"])
+
+        # 6. Windows 原生标题栏沉浸色联动
+        apply_titlebar_theme(self, is_dark=(self.current_theme_name == "dark"))
+
+        # 7. 更新服务指示
+        self.update_services_summary()
+
     def update_services_summary(self):
         if not hasattr(self, "panels"):
             return
         running_cnt = sum(1 for p in self.panels if p.is_running)
         total_cnt = len(self.panels)
+
+        if hasattr(self, "led_vps"):
+            self.led_vps.set_on(self.panel_vps.is_running)
+            self.led_proxy.set_on(self.panel_proxy.is_running)
+            self.led_bt.set_on(self.panel_bt.is_running)
+
+        if hasattr(self, "lbl_count") and self.lbl_count.winfo_exists():
+            self.lbl_count.configure(text=f"服务 {running_cnt}/{total_cnt} 在线")
+
         if running_cnt == total_cnt:
             self.summary_badge.configure(
-                text=f"● 全部运行中 ({running_cnt}/{total_cnt})",
-                fg=THEME["accent_green"]
+                text=f"全部服务正常  {running_cnt}/{total_cnt}",
+                fg=THEME["go"]
             )
         elif running_cnt > 0:
             self.summary_badge.configure(
-                text=f"● 部分就绪 ({running_cnt}/{total_cnt})",
-                fg=THEME["accent_amber"]
+                text=f"部分服务运行  {running_cnt}/{total_cnt}",
+                fg=THEME["warn"]
             )
         else:
             self.summary_badge.configure(
-                text=f"○ 服务未运行 (0/{total_cnt})",
-                fg=THEME["text_dim"]
+                text=f"待命  0/{total_cnt}",
+                fg=THEME["text_lo"]
             )
 
     def start_all(self):
@@ -963,6 +1498,14 @@ class ModernConsoleApp(tk.Tk):
         self.update_services_summary()
 
     def stop_all(self):
+        running = [p for p in self.panels if p.is_running]
+        if running:
+            if not messagebox.askokcancel(
+                "确认操作",
+                f"{len(running)} 个服务将被终止，确认全部停止？",
+                icon="warning"
+            ):
+                return
         for p in self.panels:
             p.stop_process()
         self.update_services_summary()
@@ -974,7 +1517,7 @@ class ModernConsoleApp(tk.Tk):
 
     def on_close(self):
         if any(p.is_running for p in self.panels):
-            if not messagebox.askokcancel("确认退出", "后台服务正在持续运行中，是否全部终止并退出控制台？"):
+            if not messagebox.askokcancel("确认退出", "后台服务正在持续运行中，是否全部终止并退出操控台？"):
                 return
         for p in self.panels:
             p.shutdown()
@@ -1011,10 +1554,10 @@ def main():
     if not check_and_elevate_admin():
         sys.exit(0)
 
-    # 启动前清理之前异常退出的残留进程
+    set_app_user_model_id()
     clean_lingering_script_processes()
 
-    app = ModernConsoleApp()
+    app = FieldDeckApp()
     app.mainloop()
 
 

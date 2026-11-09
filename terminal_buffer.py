@@ -12,6 +12,8 @@ from typing import List
 TOKEN_PATTERN = re.compile(
     r'(\x1B\[[0-9;?]*[a-zA-Z]|\x0c|\r\n|\r|\n|[^\x1B\x0c\r\n]+)'
 )
+# 匹配末尾未接收完全的 ANSI 转义序列前缀
+ANSI_INCOMPLETE = re.compile(r'\x1B(\[[0-9;?]*$|$)')
 
 
 class VirtualTerminalBuffer:
@@ -21,12 +23,14 @@ class VirtualTerminalBuffer:
         self.lines: List[str] = [""]
         self.cursor_row: int = 0
         self.cursor_col: int = 0
+        self._pending_stream: str = ""
 
     def clear(self):
         """清空终端缓冲区"""
         self.lines = [""]
         self.cursor_row = 0
         self.cursor_col = 0
+        self._pending_stream = ""
 
     def clear_line(self):
         """清空当前光标所在行"""
@@ -72,6 +76,21 @@ class VirtualTerminalBuffer:
 
     def feed(self, stream: str):
         """接收子进程输出流并解析控制序列"""
+        if not stream:
+            return
+
+        stream = self._pending_stream + stream
+        self._pending_stream = ""
+
+        # 检查末尾是否有未接收完整的 ANSI 转义序列 (如以 \x1b 或 \x1b[ 开头但尚未接收到结束字符)
+        m = ANSI_INCOMPLETE.search(stream)
+        if m:
+            self._pending_stream = stream[m.start():]
+            stream = stream[:m.start()]
+
+        if not stream:
+            return
+
         tokens = TOKEN_PATTERN.findall(stream)
         for tok in tokens:
             if tok == "\r\n":
@@ -88,7 +107,7 @@ class VirtualTerminalBuffer:
                 # 处理 ANSI CSI 控制指令
                 cmd = tok[-1]
                 args = tok[2:-1]
-                if cmd == "H" or cmd == "f":
+                if cmd in ("H", "f"):
                     # 光标绝对定位：\033[row;colH (1-based)
                     parts = args.split(";") if args else []
                     r = int(parts[0]) - 1 if (len(parts) > 0 and parts[0].isdigit()) else 0
@@ -101,6 +120,8 @@ class VirtualTerminalBuffer:
                     if args == "2":
                         self.lines[self.cursor_row] = ""
                         self.cursor_col = 0
+                    elif args == "1":
+                        self.lines[self.cursor_row] = " " * self.cursor_col + self.lines[self.cursor_row][self.cursor_col:]
                     else:
                         self.lines[self.cursor_row] = self.lines[self.cursor_row][:self.cursor_col]
                 elif cmd == "J":
@@ -112,8 +133,8 @@ class VirtualTerminalBuffer:
 
     def get_display_text(self) -> str:
         """获取当前屏幕完整文本渲染"""
-        # 截取末尾多余的空行
-        lines_copy = list(self.lines)
+        # 去除末尾空行并去除各行尾部的空白字符（避免覆盖填充造成的残余空格）
+        lines_copy = [line.rstrip() for line in self.lines]
         while lines_copy and not lines_copy[-1]:
             lines_copy.pop()
         return "\n".join(lines_copy)

@@ -25,6 +25,7 @@ from tkinter import font as tkfont
 from tkinter import messagebox
 from typing import Optional, Callable
 from terminal_buffer import VirtualTerminalBuffer
+import proxy_config
 
 # 脚本所在工作目录
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -303,6 +304,12 @@ def draw_icon(cv: tk.Canvas, name: str, cx: float, cy: float, size: float, color
     elif name == "moon":
         cv.create_arc(X(3), Y(3), X(21), Y(21), start=70, extent=220, style="arc", outline=color, width=w)
         cv.create_arc(X(7.5), Y(4), X(20.5), Y(20), start=70, extent=220, style="arc", outline=color, width=w)
+    elif name == "sliders":
+        # 配置台图标：双轨推子
+        line(X(2.6), Y(7), X(21.4), Y(7))
+        line(X(2.6), Y(17), X(21.4), Y(17))
+        cv.create_rectangle(X(6.6), Y(4.2), X(10.4), Y(9.8), outline=color, fill=color, width=1)
+        cv.create_rectangle(X(13.6), Y(14.2), X(17.4), Y(19.8), outline=color, fill=color, width=1)
 
 
 def draw_brand_mark(cv: tk.Canvas, size: int, bg_color: str, text_color: str):
@@ -581,6 +588,7 @@ class ServicePanel(tk.Frame):
         cmd_list: list[str],
         allow_input: bool = False,
         quick_actions: Optional[list[tuple[str, str | Callable[[], None]]]] = None,
+        config_command: Optional[Callable[[], None]] = None,
         max_buffer_rows: int = 35,
         watchdog_seconds: int = 0,
         on_status_change: Optional[Callable[[], None]] = None
@@ -602,6 +610,7 @@ class ServicePanel(tk.Frame):
         self.cmd_list = cmd_list
         self.allow_input = allow_input
         self.quick_actions = quick_actions or []
+        self.config_command = config_command
         self.on_status_change = on_status_change
 
         self.term_buffer = VirtualTerminalBuffer(max_rows=max_buffer_rows, cols=120)
@@ -719,31 +728,72 @@ class ServicePanel(tk.Frame):
         self.btn_copy.pack(side=tk.RIGHT, pady=2)
         ToolTip(self.btn_copy, "复制终端输出")
 
-        if self.quick_actions:
-            self.chip_bar = tk.Frame(self, bg=THEME["bg_panel"])
-            self.chip_bar.pack(fill=tk.X, side=tk.TOP, pady=(0, 8))
-
-            self.cmd_tag = tk.Label(
-                self.chip_bar, text="CMD", font=("Segoe UI", 8, "bold"),
-                fg=THEME["text_lo"], bg=THEME["bg_panel"]
+        if self.config_command:
+            self.btn_config = DeckButton(
+                self.toolbar, "", command=self.config_command,
+                bg_color=THEME["bg_raise"], hover_color=THEME["line_strong"],
+                text_color=THEME["text_mid"], border_color=THEME["line_soft"],
+                width=28, height=28, radius=6, icon="sliders", icon_size=13
             )
-            self.cmd_tag.pack(side=tk.LEFT, padx=(0, 7))
+            self.btn_config.pack(side=tk.RIGHT, padx=(5, 0), pady=2)
+            ToolTip(self.btn_config, "代理配置 · 快捷指令与脚本代理池")
 
-            for label, act in self.quick_actions:
-                if callable(act):
-                    cmd = act
-                else:
-                    cmd = lambda v=act: self.send_input(v)
-                b = DeckButton(
-                    self.chip_bar, label, command=cmd,
-                    bg_color=THEME["chip_bg"], hover_color=THEME["line_strong"],
-                    text_color=THEME["chip_text"], border_color=THEME["chip_border"],
-                    font_style=("Consolas", 9, "bold"),
-                    width=max(54, len(label) * 10 + 16), height=24, radius=4
-                )
-                b.pack(side=tk.LEFT, padx=(0, 5))
-                ToolTip(b, "点击下发指令到服务终端")
-                self.chips.append(b)
+        if self.quick_actions:
+            self._build_chip_bar()
+
+    def _build_chip_bar(self, before: Optional[tk.Widget] = None):
+        """构建指令芯片条；before 用于运行时重建时插回终端区之前。"""
+        self.chip_bar = tk.Frame(self, bg=THEME["bg_panel"])
+        pack_opts = {"fill": tk.X, "side": tk.TOP, "pady": (0, 8)}
+        if before is not None:
+            pack_opts["before"] = before
+        self.chip_bar.pack(**pack_opts)
+
+        self.cmd_tag = tk.Label(
+            self.chip_bar, text="CMD", font=("Segoe UI", 8, "bold"),
+            fg=THEME["text_lo"], bg=THEME["bg_panel"]
+        )
+        self.cmd_tag.pack(side=tk.LEFT, padx=(0, 7))
+        self._spawn_chips()
+
+    def _spawn_chips(self):
+        """按当前 quick_actions 重建芯片按钮（保留 CMD 标签）。"""
+        for child in list(self.chip_bar.winfo_children()):
+            if child is not getattr(self, "cmd_tag", None):
+                child.destroy()
+        self.chips.clear()
+
+        for label, act in self.quick_actions:
+            if callable(act):
+                cmd = act
+            else:
+                cmd = lambda v=act: self.send_input(v)
+            b = DeckButton(
+                self.chip_bar, label, command=cmd,
+                bg_color=THEME["chip_bg"], hover_color=THEME["line_strong"],
+                text_color=THEME["chip_text"], border_color=THEME["chip_border"],
+                font_style=("Consolas", 9, "bold"),
+                width=max(54, len(label) * 10 + 16), height=24, radius=4
+            )
+            b.pack(side=tk.LEFT, padx=(0, 5))
+            ToolTip(b, "点击下发指令到服务终端")
+            self.chips.append(b)
+
+    def set_quick_actions(self, actions: list[tuple[str, str]]):
+        """运行时替换指令芯片组（代理配置变更后调用）。"""
+        self.quick_actions = list(actions or [])
+        alive = hasattr(self, "chip_bar") and self.chip_bar.winfo_exists()
+
+        if not self.quick_actions:
+            if alive:
+                self.chip_bar.destroy()
+            self.chips.clear()
+            return
+
+        if alive:
+            self._spawn_chips()
+        else:
+            self._build_chip_bar(before=self.term_wrap)
 
     def _build_terminal(self):
         self.term_wrap = tk.Frame(
@@ -864,8 +914,13 @@ class ServicePanel(tk.Frame):
         self.btn_restart.update_style(THEME["bg_raise"], THEME["line_strong"], THEME["signal_on_dark"], border_color=THEME["line_strong"])
         self.btn_clear.update_style(THEME["bg_raise"], THEME["line_strong"], THEME["text_mid"])
         self.btn_copy.update_style(THEME["bg_raise"], THEME["line_strong"], THEME["text_mid"])
+        if self.config_command:
+            self.btn_config.update_style(
+                THEME["bg_raise"], THEME["line_strong"], THEME["text_mid"],
+                border_color=THEME["line_soft"]
+            )
 
-        if hasattr(self, "chip_bar"):
+        if getattr(self, "chip_bar", None) is not None and self.chip_bar.winfo_exists():
             self.chip_bar.configure(bg=THEME["bg_panel"])
             self.cmd_tag.configure(bg=THEME["bg_panel"], fg=THEME["text_lo"])
             for c in self.chips:
@@ -925,6 +980,11 @@ class ServicePanel(tk.Frame):
             self.clipboard_append(text)
             self.term_buffer.feed("› [deck] 终端输出已复制到剪贴板\n")
             self._render_screen()
+
+    def append_log(self, text: str):
+        """由外部（操控台）向本面板终端追加一行反馈。"""
+        self.term_buffer.feed(text)
+        self._render_screen()
 
     def start_process(self):
         if self.is_running:
@@ -1203,6 +1263,404 @@ Get-CimInstance Win32_Process -Filter "Name='chromedriver.exe'" | ForEach-Object
         pass
 
 
+class ProxyConfigDialog(tk.Toplevel):
+    """代理配置台：维护窗口快捷指令与守候脚本预设代理池。
+
+    两处变更统一写入 %LOCALAPPDATA%\\NexusFieldDeck\\proxy_config.json，
+    守候脚本启动时加载该文件，因此跨重启永久生效。
+    """
+
+    QUICK_AREA_H = 138   # 约 4 行可视
+    POOL_AREA_H = 170    # 约 5 行可视
+
+    def __init__(self, master: tk.Tk, on_apply: Callable[[dict], None]):
+        super().__init__(master)
+        self.withdraw()
+        self.title("代理配置 · PROXY CONFIG")
+        self.configure(bg=THEME["bg_deepest"])
+        self.resizable(False, False)
+        self.transient(master)
+
+        self._on_apply = on_apply
+        self._quick_rows: list[dict] = []
+        self._pool_rows: list[dict] = []
+
+        self._build()
+        self._populate(proxy_config.load())
+
+        self.protocol("WM_DELETE_WINDOW", self._close)
+        self.bind("<Escape>", lambda _e: self._close())
+
+        self.update_idletasks()
+        self._center_on(master)
+        self.deiconify()
+        self.grab_set()
+
+    # ---------- 构建 ----------
+    def _build(self):
+        root = tk.Frame(self, bg=THEME["bg_deepest"], padx=20, pady=16)
+        root.pack(fill=tk.BOTH, expand=True)
+
+        head = tk.Frame(root, bg=THEME["bg_deepest"])
+        head.pack(fill=tk.X)
+        tk.Label(
+            head, text="代理配置台", font=("Segoe UI", 15, "bold"),
+            fg=THEME["text_hi"], bg=THEME["bg_deepest"]
+        ).pack(side=tk.LEFT)
+        tk.Label(
+            head, text="PROXY CONFIG", font=("Consolas", 9, "bold"),
+            fg=THEME["text_lo"], bg=THEME["bg_deepest"]
+        ).pack(side=tk.LEFT, padx=(10, 0), pady=(4, 0))
+
+        tk.Label(
+            root,
+            text="统一维护操控台指令芯片与守候脚本预设代理池 · 变更写入 proxy_config.json 后永久生效",
+            font=("Segoe UI", 9), fg=THEME["text_lo"], bg=THEME["bg_deepest"]
+        ).pack(anchor=tk.W, pady=(6, 10))
+
+        rule = tk.Frame(root, bg=THEME["line_soft"], height=1)
+        rule.pack(fill=tk.X, pady=(0, 12))
+
+        self._build_section(
+            root, "01", "窗口快捷指令", "QUICK ACTIONS",
+            "显示为面板上的 CMD 芯片", self.QUICK_AREA_H, "quick"
+        )
+        self._build_section(
+            root, "02", "脚本代理池", "PROXY_POOL",
+            "序号 1 为默认代理 · 终端按 1~N 切换", self.POOL_AREA_H, "pool"
+        )
+
+        self.status_lbl = tk.Label(
+            root, text="", font=("Segoe UI", 9, "bold"), anchor=tk.W,
+            fg=THEME["text_mid"], bg=THEME["bg_deepest"]
+        )
+        self.status_lbl.pack(fill=tk.X, pady=(0, 12))
+
+        foot = tk.Frame(root, bg=THEME["bg_deepest"])
+        foot.pack(fill=tk.X)
+
+        tk.Label(
+            foot, text=proxy_config.config_path(), font=("Consolas", 8),
+            fg=THEME["text_lo"], bg=THEME["bg_deepest"], anchor=tk.W
+        ).pack(side=tk.LEFT)
+
+        DeckButton(
+            foot, "应用并生效", command=self._apply,
+            bg_color=THEME["signal"], hover_color=THEME["signal_hover"],
+            text_color="#FFFFFF", width=112, height=32, radius=6
+        ).pack(side=tk.RIGHT, padx=(6, 0))
+
+        DeckButton(
+            foot, "恢复默认", command=self._reset_defaults,
+            bg_color=THEME["bg_raise"], hover_color=THEME["line_strong"],
+            text_color=THEME["signal_on_dark"], border_color=THEME["line_soft"],
+            width=88, height=32, radius=6
+        ).pack(side=tk.RIGHT, padx=(6, 0))
+
+        DeckButton(
+            foot, "取消", command=self._close,
+            bg_color=THEME["bg_raise"], hover_color=THEME["line_strong"],
+            text_color=THEME["text_mid"], border_color=THEME["line_soft"],
+            width=76, height=32, radius=6
+        ).pack(side=tk.RIGHT)
+
+    def _build_section(self, parent, index: str, title: str, tag: str,
+                       note: str, height: int, section_key: str):
+        card = tk.Frame(
+            parent, bg=THEME["bg_panel"],
+            highlightbackground=THEME["line_soft"], highlightthickness=1,
+            padx=14, pady=12
+        )
+        card.pack(fill=tk.X, pady=(0, 10))
+
+        head = tk.Frame(card, bg=THEME["bg_panel"])
+        head.pack(fill=tk.X, pady=(0, 8))
+        tk.Label(
+            head, text=index, font=("Consolas", 10, "bold"),
+            fg=THEME["bg_panel"], bg=THEME["signal"], padx=6, pady=1
+        ).pack(side=tk.LEFT, padx=(0, 8))
+        tk.Label(
+            head, text=title, font=("Segoe UI", 11, "bold"),
+            fg=THEME["text_hi"], bg=THEME["bg_panel"]
+        ).pack(side=tk.LEFT)
+        tk.Label(
+            head, text=tag, font=("Consolas", 8, "bold"),
+            fg=THEME["info"], bg=THEME["bg_raise"], padx=5, pady=2
+        ).pack(side=tk.LEFT, padx=(10, 0))
+        tk.Label(
+            head, text=note, font=("Segoe UI", 8),
+            fg=THEME["text_lo"], bg=THEME["bg_panel"]
+        ).pack(side=tk.RIGHT, pady=(2, 0))
+
+        wrap, canvas, inner = self._scroll_area(card, height)
+        wrap.pack(fill=tk.X)
+
+        footer = tk.Frame(card, bg=THEME["bg_panel"])
+        footer.pack(fill=tk.X, pady=(8, 0))
+
+        btn_add = DeckButton(
+            footer, "新增", command=lambda: self._add_row(section_key, "", focus=True),
+            bg_color=THEME["bg_raise"], hover_color=THEME["line_strong"],
+            text_color=THEME["text_hi"], border_color=THEME["line_soft"],
+            font_style=("Segoe UI", 9, "bold"),
+            width=62, height=26, radius=5, icon="play", icon_size=9, pad_x=8
+        )
+        btn_add.pack(side=tk.LEFT)
+        ToolTip(btn_add, "追加一行配置")
+
+        tk.Label(
+            footer, text="支持 端口 / host:port / http://host:port", font=("Segoe UI", 8),
+            fg=THEME["text_lo"], bg=THEME["bg_panel"]
+        ).pack(side=tk.LEFT, padx=(10, 0))
+
+        if section_key == "quick":
+            self._quick_canvas, self._quick_inner = canvas, inner
+            self._quick_scroll = wrap
+        else:
+            self._pool_canvas, self._pool_inner = canvas, inner
+            self._pool_scroll = wrap
+
+    def _scroll_area(self, parent, height: int):
+        wrap = tk.Frame(
+            parent, bg=THEME["bg_panel"],
+            highlightbackground=THEME["line_soft"], highlightthickness=1
+        )
+        canvas = tk.Canvas(wrap, bg=THEME["bg_panel"], highlightthickness=0,
+                           bd=0, height=height)
+        bar = tk.Scrollbar(
+            wrap, orient=tk.VERTICAL, command=canvas.yview, width=9,
+            bg=THEME["bg_panel"], troughcolor=THEME["bg_panel"], relief=tk.FLAT
+        )
+        inner = tk.Frame(canvas, bg=THEME["bg_panel"])
+        canvas.configure(yscrollcommand=bar.set)
+        window = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def _sync(_event=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            canvas.itemconfigure(window, width=max(1, canvas.winfo_width()))
+
+        inner.bind("<Configure>", _sync)
+        canvas.bind("<Configure>", _sync)
+
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(1, 0), pady=1)
+        bar.pack(side=tk.RIGHT, fill=tk.Y, pady=1, padx=(0, 1))
+
+        tk.Frame(inner, bg=THEME["bg_panel"], height=5).pack(fill=tk.X)
+        return wrap, canvas, inner
+
+    # ---------- 行编辑 ----------
+    def _rows_of(self, section: str) -> list[dict]:
+        return self._quick_rows if section == "quick" else self._pool_rows
+
+    def _canvas_of(self, section: str) -> tk.Canvas:
+        return self._quick_canvas if section == "quick" else self._pool_canvas
+
+    def _add_row(self, section: str, value: str = "", focus: bool = False):
+        rows = self._rows_of(section)
+        inner = self._quick_inner if section == "quick" else self._pool_inner
+
+        if len(rows) >= proxy_config.MAX_ENTRIES:
+            self._set_status(
+                f"已达上限 {proxy_config.MAX_ENTRIES} 项，如需新增请先删除现有项", "error"
+            )
+            return None
+
+        row = tk.Frame(inner, bg=THEME["bg_panel"])
+        row.pack(fill=tk.X, padx=8, pady=(0, 6))
+
+        seq_lbl = tk.Label(
+            row, text="01", width=3, anchor=tk.W, font=("Consolas", 9, "bold"),
+            fg=THEME["text_lo"], bg=THEME["bg_panel"]
+        )
+        seq_lbl.pack(side=tk.LEFT, padx=(0, 6))
+
+        wrap = tk.Frame(
+            row, bg=THEME["bg_inset"],
+            highlightbackground=THEME["line_soft"], highlightthickness=1,
+            padx=6, pady=1
+        )
+        wrap.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        var = tk.StringVar(value=value)
+        entry = tk.Entry(
+            wrap, textvariable=var,
+            bg=THEME["bg_inset"], fg=THEME["term_text"],
+            insertbackground=THEME["signal"],
+            selectbackground=THEME["signal"], selectforeground=THEME["bg_inset"],
+            relief=tk.FLAT, font=("Consolas", 10)
+        )
+        entry.pack(fill=tk.X, expand=True)
+        entry.bind("<KeyRelease>",
+                   lambda _e, w=wrap: w.configure(highlightbackground=THEME["line_soft"]))
+        entry.bind("<Return>", lambda _e: self._apply())
+
+        info: dict = {"row": row, "var": var, "wrap": wrap, "entry": entry, "seq": seq_lbl}
+
+        btn_del = DeckButton(
+            row, "×", command=lambda: self._remove_row(section, info),
+            bg_color=THEME["bg_panel"], hover_color=THEME["line_strong"],
+            text_color=THEME["danger"], border_color=THEME["line_soft"],
+            font_style=("Segoe UI", 11, "bold"),
+            width=26, height=24, radius=4
+        )
+        btn_del.pack(side=tk.LEFT, padx=(6, 0))
+        ToolTip(btn_del, "删除该项")
+
+        rows.append(info)
+        self._renumber(section)
+
+        canvas = self._canvas_of(section)
+        for widget in (row, seq_lbl, wrap, entry, btn_del):
+            widget.bind("<MouseWheel>", lambda e, c=canvas: self._on_wheel(e, c))
+        if section == "quick":
+            self._quick_scroll.bind("<MouseWheel>", lambda e, c=canvas: self._on_wheel(e, c))
+        else:
+            self._pool_scroll.bind("<MouseWheel>", lambda e, c=canvas: self._on_wheel(e, c))
+
+        if focus:
+            entry.focus_set()
+            canvas.yview_moveto(1.0)
+        return info
+
+    def _remove_row(self, section: str, info: dict, silent: bool = False):
+        rows = self._rows_of(section)
+        if info not in rows:
+            return
+        rows.remove(info)
+        info["row"].destroy()
+        self._renumber(section)
+        if not silent:
+            self._set_status("已移除 1 项，点击「应用并生效」写入配置", "idle")
+
+    def _renumber(self, section: str):
+        for idx, info in enumerate(self._rows_of(section), start=1):
+            info["seq"].configure(text=f"{idx:02d}" if section == "quick" else str(idx))
+
+    def _on_wheel(self, event, canvas: tk.Canvas):
+        canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
+
+    # ---------- 数据 ----------
+    def _populate(self, cfg: dict):
+        for info in self._quick_rows + self._pool_rows:
+            info["row"].destroy()
+        self._quick_rows.clear()
+        self._pool_rows.clear()
+
+        for value in cfg.get("quick_actions", []):
+            self._add_row("quick", value)
+        for value in cfg.get("proxy_pool", []):
+            self._add_row("pool", value)
+
+        source = "配置文件" if cfg.get("source") == "file" else "内置默认"
+        self._set_status(
+            f"当前生效 · 快捷指令 {len(cfg.get('quick_actions', []))} 项 / "
+            f"代理池 {len(cfg.get('proxy_pool', []))} 项（来源：{source}）",
+            "idle"
+        )
+
+    def _validate(self, section: str, label: str, required: bool) -> tuple[list[str], Optional[str]]:
+        rows = self._rows_of(section)
+        cleaned: list[str] = []
+
+        for idx, info in enumerate(rows):
+            raw = info["var"].get().strip()
+            wrap = info["wrap"]
+            if not raw:
+                if required:
+                    wrap.configure(highlightbackground=THEME["danger"])
+                    info["entry"].focus_set()
+                    return [], f"{label} 第 {idx + 1} 项为空，请填写或删除该行"
+                continue
+
+            norm = proxy_config.normalize_proxy(raw)
+            if not norm:
+                wrap.configure(highlightbackground=THEME["danger"])
+                info["entry"].focus_set()
+                return [], f"{label} 第 {idx + 1} 项格式无效：{raw}"
+            if norm in cleaned:
+                wrap.configure(highlightbackground=THEME["danger"])
+                info["entry"].focus_set()
+                return [], f"{label} 第 {idx + 1} 项与已有项重复：{norm}"
+            cleaned.append(norm)
+
+        if required and not cleaned:
+            return [], f"{label} 至少需要保留 1 项"
+        return cleaned, None
+
+    def _apply(self):
+        # 快捷指令允许留空占位，应用前自动剪除空行
+        for info in list(self._quick_rows):
+            if not info["var"].get().strip():
+                self._remove_row("quick", info, silent=True)
+
+        quick, err = self._validate("quick", "窗口快捷指令", required=False)
+        if err:
+            self._set_status(err, "error")
+            return
+
+        pool, err = self._validate("pool", "脚本代理池", required=True)
+        if err:
+            self._set_status(err, "error")
+            return
+
+        try:
+            payload = proxy_config.save(quick, pool)
+        except (OSError, ValueError) as exc:
+            self._set_status(f"写入配置失败：{exc}", "error")
+            return
+
+        # 回填规范化结果，让用户看到最终落盘形态
+        for info, value in zip(self._quick_rows, quick):
+            info["var"].set(value)
+        for info, value in zip(self._pool_rows, pool):
+            info["var"].set(value)
+
+        try:
+            self._on_apply(payload)
+        except Exception as exc:
+            self._set_status(f"配置已写入，但应用失败：{exc}", "error")
+            return
+
+        self.grab_release()
+        self.destroy()
+
+    def _reset_defaults(self):
+        self._populate({
+            "quick_actions": list(proxy_config.DEFAULT_QUICK_ACTIONS),
+            "proxy_pool": list(proxy_config.DEFAULT_PROXY_POOL),
+            "source": "default",
+        })
+        self._set_status("已载入内置默认值，点击「应用并生效」写回配置", "idle")
+
+    def _set_status(self, text: str, kind: str = "idle"):
+        color = {
+            "ok": THEME["go"],
+            "error": THEME["danger"],
+            "idle": THEME["text_mid"],
+        }.get(kind, THEME["text_mid"])
+        prefix = "● " if kind != "idle" else "· "
+        self.status_lbl.configure(text=prefix + text, fg=color)
+
+    def _center_on(self, master: tk.Tk):
+        w, h = self.winfo_reqwidth(), self.winfo_reqheight()
+        try:
+            px, py = master.winfo_rootx(), master.winfo_rooty()
+            pw, ph = master.winfo_width(), master.winfo_height()
+        except Exception:
+            px = py = 0
+            pw, ph = 1440, 900
+        x = max(0, px + (pw - w) // 2)
+        y = max(0, py + (ph - h) // 2)
+        self.geometry(f"{w}x{h}+{x}+{y}")
+
+    def _close(self):
+        try:
+            self.grab_release()
+        except Exception:
+            pass
+        self.destroy()
+
+
 class FieldDeckApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -1364,13 +1822,9 @@ class FieldDeckApp(tk.Tk):
         )
         self.panel_vps.grid(row=0, column=0, sticky="nsew", padx=6)
 
-        proxy_actions = [
-            ("20808", "127.0.0.1:20808"),
-            ("9990", "127.0.0.1:9990"),
-            ("8890", "127.0.0.1:8890"),
-            ("10889", "127.0.0.1:10889"),
-            ("7897", "127.0.0.1:7897"),
-        ]
+        # 代理快捷指令与脚本代理池统一由持久化配置驱动（配置台可增删改）
+        proxy_cfg = proxy_config.load()
+        proxy_actions = [(proxy_config.chip_label(p), p) for p in proxy_cfg["quick_actions"]]
         self.panel_proxy = ServicePanel(
             self.content_frame,
             index="02",
@@ -1382,6 +1836,7 @@ class FieldDeckApp(tk.Tk):
             cmd_list=[sys.executable, "-u", "systemproxy_watcher.py"],
             allow_input=True,
             quick_actions=proxy_actions,
+            config_command=self.open_proxy_config,
             max_buffer_rows=32,
             on_status_change=self.update_services_summary
         )
@@ -1582,6 +2037,31 @@ class FieldDeckApp(tk.Tk):
         for p in self.panels:
             p.restart_process()
         self.update_services_summary()
+
+    def open_proxy_config(self):
+        """打开代理配置台（模态）：编辑快捷指令与脚本代理池。"""
+        ProxyConfigDialog(self, on_apply=self.apply_proxy_config)
+
+    def apply_proxy_config(self, cfg: dict):
+        """配置写入后刷新芯片组；守候脚本在运行中则按新代理池自动重启。"""
+        quick = cfg.get("quick_actions") or []
+        pool = cfg.get("proxy_pool") or []
+
+        self.panel_proxy.set_quick_actions(
+            [(proxy_config.chip_label(p), p) for p in quick]
+        )
+        self.panel_proxy.append_log(
+            f"› 代理配置已更新并持久化 · 快捷指令 {len(quick)} 项 / 脚本代理池 {len(pool)} 项\n"
+        )
+        self.panel_proxy.append_log(
+            f"› 配置文件: {cfg.get('path', proxy_config.config_path())}\n"
+        )
+
+        if self.panel_proxy.is_running:
+            self.panel_proxy.append_log("› 守候脚本按新代理池重启\n")
+            self.panel_proxy.restart_process()
+        else:
+            self.panel_proxy.append_log("› 下次启动守候脚本时按新代理池加载\n")
 
     def on_close(self):
         if any(p.is_running for p in self.panels):

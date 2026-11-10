@@ -9,6 +9,8 @@ import threading
 from typing import Optional
 
 # ====== 配置区域 ======
+# 内置默认代理池。实际生效列表优先取自 proxy_config.json
+#（由操控台「代理配置」面板维护，变更永久生效）；配置缺失时回退到下面的内置值。
 PROXY_POOL = [
     "127.0.0.1:20808",
     "127.0.0.1:10808",
@@ -23,6 +25,24 @@ REG_PATH = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
 CURRENT_PROXY_ROW = 2
 STATUS_ROW = 5
 PROXY_POOL_START_ROW = 8
+
+# 外部配置覆盖：操控台写入的快捷指令与代理池存放在 proxy_config.json，
+# 必须先于布局常量计算应用，行号才能与新代理池长度对齐。
+POOL_SOURCE = "builtin"
+try:
+    import proxy_config as _proxy_config
+except Exception:
+    _proxy_config = None
+
+if _proxy_config is not None:
+    try:
+        _cfg = _proxy_config.load()
+        if _cfg.get("proxy_pool"):
+            PROXY_POOL = list(_cfg["proxy_pool"])
+            POOL_SOURCE = "file" if _cfg.get("source") == "file" else "builtin"
+    except Exception:
+        POOL_SOURCE = "builtin"
+
 LOG_START_ROW = PROXY_POOL_START_ROW + len(PROXY_POOL) + 2
 MAX_LOG_LINES = 10
 
@@ -210,13 +230,16 @@ def write_at(row: int, text: str = ""):
 
 def render_static_screen():
     # 直接发送 ANSI 清屏序列，避免后台运行时创建 cmd 窗口。
+    pool_src = "配置" if POOL_SOURCE == "file" else "内置"
     sys.stdout.write("\x1b[2J\x1b[H")
-    sys.stdout.write(f"系统代理监控已启动 (间隔 {CHECK_INTERVAL}s)\n")
+    sys.stdout.write(f"系统代理监控已启动 (间隔 {CHECK_INTERVAL}s | 代理池: {pool_src})\n")
     sys.stdout.write("\n")
     sys.stdout.write(f"按 Ctrl+C 停止\n")
     sys.stdout.write(f"{'-' * 50}\n")
     sys.stdout.write("\n")
-    sys.stdout.write("预设代理池（按序号 1~5 切换，或直接输入端口/完整地址）:\n")
+    sys.stdout.write(
+        f"预设代理池（按序号 1~{len(PROXY_POOL)} 切换，或直接输入端口/完整地址）:\n"
+    )
     # 为预设代理池保留行
     for _ in PROXY_POOL:
         sys.stdout.write("\n")

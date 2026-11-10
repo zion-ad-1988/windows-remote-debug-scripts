@@ -35,6 +35,8 @@ Windows 远程调试与日常运维脚本集成控制中心（**Nexus Hub · Ser
 3. **🛡️ 纯净进程生命周期守护**：
    - **冷启动清理**：程序拉起时自动扫描并清理以往测试遗留的孤立后台进程。
    - **退出安全回收**：关闭窗口或停止任务时，利用 `taskkill /F /T` 递归杀除进程树（含 ChromeDriver 及 PowerShell 后台）。
+   - **强杀兜底**：`vpscodex.py` 将自身与 ChromeDriver 绑定进 Windows Job Object（`KILL_ON_JOB_CLOSE`），即使进程被强制结束，浏览器子进程也会由系统一并回收，不再累积孤儿进程。
+   - **静默看门狗**：面板检测到服务进程长时间零输出即判定无响应，自动终止并按退避策略重建（每小时最多 5 次），无需人工干预。
 
 4. **⌨️ 智能代理自由切换**：
    - 在系统代理面板下方输入框直接输入端口（如 `7890`），自动补全为 `127.0.0.1:7890` 并生效。
@@ -63,6 +65,20 @@ Windows 远程调试与日常运维脚本集成控制中心（**Nexus Hub · Ser
 ```bash
 python gui_launcher.py
 ```
+
+### 3. 云节点探测配置
+
+`vpscodex.py` 的接入地址与密码**不纳入仓库**，通过环境变量注入：
+
+| 变量 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `VPSCODEX_URL` | `https://home.kuniaovps.com/i/remote/1` | 控制台页面地址（含分享密钥） |
+| `VPSCODEX_PASSWORD` | 空 | 页面登录密码 |
+| `VPSCODEX_RDP_FILE` | `%USERPROFILE%\Desktop\UK Play.rdp` | 远程桌面快捷文件路径 |
+
+长稳参数均有默认值，通常无需改动：`VPSCODEX_POLL_INTERVAL`（轮询间隔，60s）、`VPSCODEX_CMD_TIMEOUT`（单条指令超时，25s）、`VPSCODEX_NAV_TIMEOUT`（导航超时，60s）、`VPSCODEX_SETTLE_TIMEOUT`（页面就绪等待，90s）、`VPSCODEX_RECYCLE_SECONDS`（会话回收周期，1800s）、`VPSCODEX_RECYCLE_COMMANDS`（会话指令上限，1200 条）。
+
+环境自检：`python vpscodex.py --once`（建会话 → 读状态 → 回收，返回码 0 表示链路正常）。诊断日志位于 `%LOCALAPPDATA%\NexusFieldDeck\vpscodex.log`（1MB 轮转）。
 
 ---
 

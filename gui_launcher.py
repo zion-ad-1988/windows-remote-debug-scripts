@@ -582,6 +582,7 @@ class ServicePanel(tk.Frame):
         allow_input: bool = False,
         quick_actions: Optional[list[tuple[str, str | Callable[[], None]]]] = None,
         max_buffer_rows: int = 35,
+        watchdog_seconds: int = 0,
         on_status_change: Optional[Callable[[], None]] = None
     ):
         super().__init__(
@@ -610,6 +611,12 @@ class ServicePanel(tk.Frame):
         self._closing = False
         self._last_rendered_text = ""
         self.chips: list[DeckButton] = []
+
+        # 静默看门狗：进程存活但长时间无任何输出即判定无响应，自动重建
+        self.watchdog_seconds = watchdog_seconds
+        self._last_output_ts = time.monotonic()
+        self._restart_stamps: list[float] = []
+        self._watchdog_retry = 0
 
         self._build_header()
         self._build_toolbar()
@@ -939,6 +946,7 @@ class ServicePanel(tk.Frame):
         self.btn_stop.set_state("normal")
         self.btn_restart.set_state("normal")
         self.is_running = True
+        self._last_output_ts = time.monotonic()
         if self.on_status_change:
             self.on_status_change()
 
@@ -987,6 +995,7 @@ class ServicePanel(tk.Frame):
                 chunk = proc.stdout.read(1024)
                 if not chunk:
                     break
+                self._last_output_ts = time.monotonic()
                 if not use_gbk:
                     try:
                         text = utf8_decoder.decode(chunk)
@@ -1012,7 +1021,7 @@ class ServicePanel(tk.Frame):
             pass
 
         exit_code = proc.wait()
-        self.output_queue.put(("__PROCESS_EXIT__", exit_code))
+        self.output_queue.put(("__PROCESS_EXIT__", exit_code, proc))
 
     def _check_output_loop(self):
         updated = False
@@ -1020,7 +1029,8 @@ class ServicePanel(tk.Frame):
             while not self.output_queue.empty():
                 item = self.output_queue.get_nowait()
                 if isinstance(item, tuple) and item[0] == "__PROCESS_EXIT__":
-                    self._on_process_ended(item[1])
+                    proc_ref = item[2] if len(item) > 2 else None
+                    self._on_process_ended(item[1], proc_ref)
                 else:
                     self.term_buffer.feed(str(item))
                     updated = True
@@ -1030,10 +1040,60 @@ class ServicePanel(tk.Frame):
         if updated:
             self._render_screen()
 
+        self._check_watchdog()
+
         if not self._closing:
             self.after(50, self._check_output_loop)
 
-    def _on_process_ended(self, exit_code: int):
+    def _check_watchdog(self):
+        """进程仍存活却长时间零输出 → 判定无响应，终止并自动重建。"""
+        if not self.watchdog_seconds or not self.is_running:
+            return
+
+        silent = time.monotonic() - self._last_output_ts
+        if silent <= self.watchdog_seconds:
+            return
+
+        now = time.monotonic()
+        self._restart_stamps = [t for t in self._restart_stamps if now - t < 3600]
+        self._last_output_ts = now
+
+        self.term_buffer.feed(
+            f"\n[看门狗] {int(silent)} 秒无任何输出，判定进程无响应，正在重建\n"
+        )
+        self._render_screen()
+
+        if len(self._restart_stamps) >= 5:
+            self.term_buffer.feed("[看门狗] 一小时内自愈次数已达上限，需人工排查原因\n")
+            self._render_screen()
+            self.stop_process()
+            return
+
+        self._restart_stamps.append(now)
+        self.stop_process()
+        self.after(1500, self._restart_after_watchdog)
+
+    def _restart_after_watchdog(self):
+        if self._closing:
+            return
+        if self.is_running:
+            # 终止信号尚未生效：有限次重试，仍失败则放弃旧句柄直接重建
+            self._watchdog_retry += 1
+            if self._watchdog_retry <= 4:
+                self.stop_process()
+                self.after(800, self._restart_after_watchdog)
+                return
+            self.term_buffer.feed("[看门狗] 旧进程无法结束，丢弃句柄后强制重建\n")
+            self._on_process_ended(-1, self.process)
+        self._watchdog_retry = 0
+        self.term_buffer.feed("[看门狗] 已重新拉起服务\n")
+        self._render_screen()
+        self.start_process()
+
+    def _on_process_ended(self, exit_code: int, proc=None):
+        if proc is not None and self.process is not None and self.process is not proc:
+            # 旧进程迟到的退出通知，当前已有新会话，忽略
+            return
         self.is_running = False
         self.process = None
         self.badge.update_status("已停止", THEME["danger"])
@@ -1116,14 +1176,20 @@ def clean_lingering_script_processes():
         return
     try:
         my_pid = os.getpid()
+        # 除脚本自身进程外，同时清理：带本程序 profile 标记的 chrome、
+        # 以及父进程已消失的孤儿 chromedriver（脚本命令行里不含它们的名字，
+        # 旧版仅按 vpscodex.py 匹配，导致每次强杀都残留整棵浏览器进程树）。
         clean_ps = f"""
+$pattern = 'vpscodex\\.py|vpscodex-chrome-|systemproxy_watcher\\.py|bluetooth\\.ps1'
 Get-CimInstance Win32_Process | Where-Object {{
-    ($_.CommandLine -like '*vpscodex.py*' -or
-     $_.CommandLine -like '*systemproxy_watcher.py*' -or
-     $_.CommandLine -like '*bluetooth.ps1*') -and
-    $_.ProcessId -ne {my_pid}
+    $_.ProcessId -ne {my_pid} -and $_.CommandLine -and $_.CommandLine -match $pattern
 }} | ForEach-Object {{
-    Stop-Process -Id $_.ProcessId -Force
+    Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+}}
+Get-CimInstance Win32_Process -Filter "Name='chromedriver.exe'" | ForEach-Object {{
+    if (-not (Get-Process -Id $_.ParentProcessId -ErrorAction SilentlyContinue)) {{
+        Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+    }}
 }}
 """
         subprocess.run(
@@ -1131,7 +1197,7 @@ Get-CimInstance Win32_Process | Where-Object {{
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NO_WINDOW,
-            timeout=5
+            timeout=25
         )
     except Exception:
         pass
@@ -1292,6 +1358,8 @@ class FieldDeckApp(tk.Tk):
             allow_input=True,
             quick_actions=vps_actions,
             max_buffer_rows=40,
+            # vpscodex 每秒都有轮询输出；静默超过 300 秒即为无响应
+            watchdog_seconds=300,
             on_status_change=self.update_services_summary
         )
         self.panel_vps.grid(row=0, column=0, sticky="nsew", padx=6)

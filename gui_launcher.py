@@ -768,7 +768,10 @@ class ServicePanel(tk.Frame):
             self._build_chip_bar()
 
     def _build_chip_bar(self, before: Optional[tk.Widget] = None):
-        """构建指令芯片条；before 用于运行时重建时插回终端区之前。"""
+        """构建指令芯片条；before 用于运行时重建时插回终端区之前。
+
+        芯片按可用宽度自动分行，宽度不足时换行而不是溢出面板边界。
+        """
         self.chip_bar = tk.Frame(self, bg=THEME["bg_panel"])
         pack_opts = {"fill": tk.X, "side": tk.TOP, "pady": (0, 8)}
         if before is not None:
@@ -779,15 +782,77 @@ class ServicePanel(tk.Frame):
             self.chip_bar, text="CMD", font=("Segoe UI", 8, "bold"),
             fg=THEME["text_lo"], bg=THEME["bg_panel"]
         )
-        self.cmd_tag.pack(side=tk.LEFT, padx=(0, 7))
+        self._chip_rows: list[tk.Frame] = []
+        self._chip_layout_sig = None
+        self._chip_reflow_job = None
+        self.chip_bar.bind("<Configure>", self._on_chip_bar_configure, add="+")
         self._spawn_chips()
 
+    def _on_chip_bar_configure(self, _event=None):
+        """宽度变化后延迟重排，避免拖动窗口时频繁重建行。"""
+        if getattr(self, "_chip_reflow_job", None):
+            try:
+                self.after_cancel(self._chip_reflow_job)
+            except Exception:
+                pass
+        try:
+            self._chip_reflow_job = self.after(60, self._reflow_chips)
+        except tk.TclError:
+            self._chip_reflow_job = None
+
+    def _reflow_chips(self, force: bool = False):
+        """把芯片按当前可用宽度分行排布，保证全部可见。"""
+        self._chip_reflow_job = None
+        if getattr(self, "_closing", False) or not self.chips:
+            return
+        if not (hasattr(self, "chip_bar") and self.chip_bar.winfo_exists()):
+            return
+
+        avail = self.chip_bar.winfo_width()
+        if avail <= 20:
+            # 首帧尚未完成布局：先按单行放置，待 Configure 事件再分行
+            avail = 100000
+
+        groups: list[list[tk.Widget]] = []
+        cur: list[tk.Widget] = []
+        used = self.cmd_tag.winfo_reqwidth() + 7
+        for chip in self.chips:
+            need = chip.w + 5
+            if cur and used + need > avail:
+                groups.append(cur)
+                cur, used = [], 0
+            cur.append(chip)
+            used += need
+        if cur:
+            groups.append(cur)
+
+        sig = (avail, tuple(len(g) for g in groups))
+        if not force and sig == self._chip_layout_sig and self._chip_rows:
+            return
+        self._chip_layout_sig = sig
+
+        for row in self._chip_rows:
+            row.destroy()
+        self._chip_rows = []
+
+        for index, group in enumerate(groups):
+            row = tk.Frame(self.chip_bar, bg=THEME["bg_panel"])
+            row.pack(fill=tk.X, pady=(0, 0 if index == len(groups) - 1 else 4))
+            self._chip_rows.append(row)
+
+            if index == 0:
+                self.cmd_tag.pack(in_=row, side=tk.LEFT, padx=(0, 7))
+            for pos, chip in enumerate(group):
+                left_pad = 0 if pos == 0 else getattr(chip, "gap_left", 5)
+                chip.pack(in_=row, side=tk.LEFT, padx=(left_pad, 5))
+
     def _spawn_chips(self):
-        """按当前 quick_actions 重建芯片按钮（保留 CMD 标签）。"""
+        """按当前 quick_actions / fixed_actions 重建芯片按钮（保留 CMD 标签）。"""
         for child in list(self.chip_bar.winfo_children()):
             if child is not getattr(self, "cmd_tag", None):
                 child.destroy()
         self.chips.clear()
+        self._chip_rows = []
 
         for label, act in self.quick_actions:
             if callable(act):
@@ -799,9 +864,10 @@ class ServicePanel(tk.Frame):
                 bg_color=THEME["chip_bg"], hover_color=THEME["line_strong"],
                 text_color=THEME["chip_text"], border_color=THEME["chip_border"],
                 font_style=("Consolas", 9, "bold"),
-                width=max(54, len(label) * 10 + 16), height=24, radius=4
+                width=max(52, len(label) * 9 + 14), height=24, radius=4
             )
-            b.pack(side=tk.LEFT, padx=(0, 5))
+            b.gap_left = 0
+            b.is_fixed = False
             ToolTip(b, "点击下发指令到服务终端")
             self.chips.append(b)
 
@@ -818,9 +884,12 @@ class ServicePanel(tk.Frame):
                 font_style=("Segoe UI", 9, "bold"),
                 width=max(60, len(label) * 13 + 14), height=24, radius=4
             )
-            b.pack(side=tk.LEFT, padx=(10, 0))
+            b.gap_left = 10
+            b.is_fixed = True
             ToolTip(b, "清除系统代理，守候将保持关闭状态")
             self.chips.append(b)
+
+        self._reflow_chips(force=True)
 
     def set_quick_actions(self, actions: list[tuple[str, str]]):
         """运行时替换指令芯片组（代理配置变更后调用）。"""
@@ -966,8 +1035,14 @@ class ServicePanel(tk.Frame):
         if getattr(self, "chip_bar", None) is not None and self.chip_bar.winfo_exists():
             self.chip_bar.configure(bg=THEME["bg_panel"])
             self.cmd_tag.configure(bg=THEME["bg_panel"], fg=THEME["text_lo"])
+            for row in getattr(self, "_chip_rows", []):
+                row.configure(bg=THEME["bg_panel"])
             for c in self.chips:
-                c.update_style(THEME["chip_bg"], THEME["line_strong"], THEME["chip_text"], border_color=THEME["chip_border"])
+                if getattr(c, "is_fixed", False):
+                    c.update_style(THEME["bg_raise"], THEME["line_strong"],
+                                   THEME["danger"], border_color=THEME["danger"])
+                else:
+                    c.update_style(THEME["chip_bg"], THEME["line_strong"], THEME["chip_text"], border_color=THEME["chip_border"])
 
         self.term_wrap.configure(bg=THEME["bg_inset"], highlightbackground=THEME["line_soft"])
         self.term_head.configure(bg=THEME["bg_inset"])

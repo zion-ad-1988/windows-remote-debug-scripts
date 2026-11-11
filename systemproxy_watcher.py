@@ -29,6 +29,7 @@ PROXY_POOL_START_ROW = 8
 # 外部配置覆盖：操控台写入的快捷指令与代理池存放在 proxy_config.json，
 # 必须先于布局常量计算应用，行号才能与新代理池长度对齐。
 POOL_SOURCE = "builtin"
+INITIAL_MONITORING = True
 try:
     import proxy_config as _proxy_config
 except Exception:
@@ -40,8 +41,14 @@ if _proxy_config is not None:
         if _cfg.get("proxy_pool"):
             PROXY_POOL = list(_cfg["proxy_pool"])
             POOL_SOURCE = "file" if _cfg.get("source") == "file" else "builtin"
+        INITIAL_MONITORING = bool(_cfg.get("monitoring", True))
     except Exception:
         POOL_SOURCE = "builtin"
+        INITIAL_MONITORING = True
+
+# 清除代理的内部指令标识（与"选中的代理地址"区分）
+PROXY_OFF = "__proxy_off__"
+OFF_TOKENS = {"off", "0", "none", "disable", "取消", "关闭", "清除", "清除代理"}
 
 LOG_START_ROW = PROXY_POOL_START_ROW + len(PROXY_POOL) + 2
 MAX_LOG_LINES = 10
@@ -92,8 +99,38 @@ def apply_proxy(proxy_server: str) -> str:
     return f"[{time.strftime('%H:%M:%S')}] 代理已应用 -> {proxy_server}"
 
 
+def clear_proxy() -> str:
+    """关闭并清空当前用户系统代理，供"清除代理"选项使用。"""
+    write_registry(0, "", "")
+    notify_internet_settings()
+    return f"[{time.strftime('%H:%M:%S')}] 系统代理已清除 · 守候保持关闭（输入序号/端口恢复）"
+
+
+def persist_monitoring(enabled: bool):
+    """把守候开关写入持久配置，使清除状态在重启后依然成立。"""
+    if _proxy_config is None:
+        return
+    try:
+        _proxy_config.set_monitoring(enabled)
+    except Exception:
+        pass
+
+
 def check_and_fix(proxy_server: str) -> str | None:
+    """校验并强制恢复目标状态。
+
+    proxy_server 为空表示目标状态是"代理关闭"——同样每轮校验，
+    被其它程序重新开启时立即清除。
+    """
     enabled, server, bypass = read_registry()
+
+    if not proxy_server:
+        if enabled == 0 and not server:
+            return None
+        write_registry(0, "", "")
+        notify_internet_settings()
+        return f"[{time.strftime('%H:%M:%S')}] 检测到代理被重新开启，已再次清除"
+
     needs_fix = False
     if enabled != 1:
         needs_fix = True
@@ -160,7 +197,7 @@ def normalize_proxy(val: str) -> Optional[str]:
 
 def read_proxy_choice(logs: list[str]) -> tuple[Optional[str], bool]:
     """读取用户按键输入或管道标准输入。
-    返回值: (proxy_address, should_update)
+    返回值: (proxy_address | PROXY_OFF, should_update)
     """
     # 优先检查管道/标准输入队列
     while not INPUT_QUEUE.empty():
@@ -173,6 +210,10 @@ def read_proxy_choice(logs: list[str]) -> tuple[Optional[str], bool]:
             logs.clear()
             render_static_screen()
             return None, True
+
+        # 清除系统代理并暂停守候
+        if text.lower() in OFF_TOKENS:
+            return PROXY_OFF, True
 
         # 检查是否为固定预设代理编号（1 ~ len(PROXY_POOL)）
         if text.isdigit():
@@ -206,6 +247,10 @@ def read_proxy_choice(logs: list[str]) -> tuple[Optional[str], bool]:
         render_static_screen()
         return None, True
 
+    # 按 0 清除系统代理
+    if key == "0":
+        return PROXY_OFF, True
+
     # 控制台按键单键判断：1 ~ len(PROXY_POOL)
     if key.isdigit():
         num = int(key)
@@ -234,7 +279,7 @@ def render_static_screen():
     sys.stdout.write("\x1b[2J\x1b[H")
     sys.stdout.write(f"系统代理监控已启动 (间隔 {CHECK_INTERVAL}s | 代理池: {pool_src})\n")
     sys.stdout.write("\n")
-    sys.stdout.write(f"按 Ctrl+C 停止\n")
+    sys.stdout.write(f"按 Ctrl+C 停止 · 输入 0 / off 清除代理\n")
     sys.stdout.write(f"{'-' * 50}\n")
     sys.stdout.write("\n")
     sys.stdout.write(
@@ -248,11 +293,15 @@ def render_static_screen():
 
 
 def render_dynamic_screen(current_proxy: str, remaining: int, logs: list[str]):
-    write_at(CURRENT_PROXY_ROW, f"当前代理: {current_proxy}")
-    write_at(STATUS_ROW, f"下次检测: {remaining}s  |  日志: {len(logs)} 条")
+    if current_proxy:
+        write_at(CURRENT_PROXY_ROW, f"当前代理: {current_proxy}")
+        write_at(STATUS_ROW, f"下次检测: {remaining}s  |  日志: {len(logs)} 条")
+    else:
+        write_at(CURRENT_PROXY_ROW, "当前代理: 已清除 (守候保持关闭)")
+        write_at(STATUS_ROW, f"下次校验: {remaining}s  |  日志: {len(logs)} 条")
 
     for index, proxy_server in enumerate(PROXY_POOL, start=1):
-        current_mark = "  <- 当前" if proxy_server == current_proxy else ""
+        current_mark = "  <- 当前" if (current_proxy and proxy_server == current_proxy) else ""
         write_at(PROXY_POOL_START_ROW + index - 1, f"  {index}. {proxy_server}{current_mark}")
 
     for offset in range(MAX_LOG_LINES):
@@ -279,8 +328,15 @@ def main():
         t.start()
 
     logs: list[str] = []
-    current_proxy = PROXY_POOL[DEFAULT_PROXY_INDEX] if PROXY_POOL else "127.0.0.1:10808"
+    # 空字符串表示目标状态为"代理关闭"，同样由 5s 校验持续保持
+    if INITIAL_MONITORING and PROXY_POOL:
+        current_proxy = PROXY_POOL[DEFAULT_PROXY_INDEX]
+    else:
+        current_proxy = ""
+
     render_static_screen()
+    if not current_proxy:
+        append_log(logs, clear_proxy())
     render_screen(current_proxy, CHECK_INTERVAL, logs)
 
     while True:
@@ -292,9 +348,14 @@ def main():
                 while time.monotonic() < next_tick:
                     new_proxy, triggered = read_proxy_choice(logs)
                     if triggered:
-                        if new_proxy:
+                        if new_proxy == PROXY_OFF:
+                            current_proxy = ""
+                            append_log(logs, clear_proxy())
+                            persist_monitoring(False)
+                        elif new_proxy:
                             current_proxy = new_proxy
                             append_log(logs, apply_proxy(current_proxy))
+                            persist_monitoring(True)
                         render_screen(current_proxy, remaining, logs)
                     time.sleep(0.05)
                 remaining -= 1

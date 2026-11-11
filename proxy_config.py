@@ -12,6 +12,7 @@ NEXUS · 代理配置持久层
       "version": 1,
       "quick_actions": ["127.0.0.1:20808", ...],   # 操控台指令芯片
       "proxy_pool":    ["127.0.0.1:20808", ...],   # 守候脚本预设代理池
+      "monitoring":    true,                       # false = 已清除代理并暂停守候
       "updated_at":    "2026-11-10 11:40:00"
     }
 
@@ -49,6 +50,9 @@ DEFAULT_PROXY_POOL = [
 
 # 单侧配置项上限（与按键编号展示、界面高度相匹配）
 MAX_ENTRIES = 12
+
+# 守候开关默认值：true = 持续校验并强制代理生效
+DEFAULT_MONITORING = True
 
 _PROTOCOL_PREFIXES = ("http://", "https://", "socks5://", "socks://", "socks=")
 _LOCAL_HOSTS = ("127.0.0.1", "localhost")
@@ -150,12 +154,14 @@ def load() -> dict:
         return {
             "quick_actions": list(DEFAULT_QUICK_ACTIONS),
             "proxy_pool": list(DEFAULT_PROXY_POOL),
+            "monitoring": DEFAULT_MONITORING,
             "source": "default",
             "path": config_path(),
         }
     return {
         "quick_actions": _clean_list(payload.get("quick_actions"), DEFAULT_QUICK_ACTIONS),
         "proxy_pool": _clean_list(payload.get("proxy_pool"), DEFAULT_PROXY_POOL),
+        "monitoring": bool(payload.get("monitoring", DEFAULT_MONITORING)),
         "source": "file",
         "path": config_path(),
     }
@@ -166,18 +172,27 @@ def load_proxy_pool() -> list[str]:
     return load()["proxy_pool"]
 
 
-def save(quick_actions: list[str], proxy_pool: list[str]) -> dict:
-    """原子写入配置文件并返回落盘内容。代理池必须至少保留一项。"""
+def save(quick_actions: list[str], proxy_pool: list[str],
+         monitoring: Optional[bool] = None) -> dict:
+    """原子写入配置文件并返回落盘内容。
+
+    代理池必须至少保留一项；monitoring 传 None 表示沿用当前值
+    （配置台改代理时不改变"是否守候"的状态）。
+    """
     quick = _clean_list(quick_actions, [])
     pool = _clean_list(proxy_pool, [])
     if not pool:
         raise ValueError("脚本代理池至少需要保留 1 项")
+
+    if monitoring is None:
+        monitoring = load().get("monitoring", DEFAULT_MONITORING)
 
     path = config_path()
     payload = {
         "version": CONFIG_VERSION,
         "quick_actions": quick,
         "proxy_pool": pool,
+        "monitoring": bool(monitoring),
         "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
 
@@ -191,6 +206,13 @@ def save(quick_actions: list[str], proxy_pool: list[str]) -> dict:
     payload["path"] = path
     payload["source"] = "file"
     return payload
+
+
+def set_monitoring(enabled: bool) -> bool:
+    """记录守候开关状态（清除代理 / 选定代理时由守候脚本调用）。"""
+    cfg = load()
+    payload = save(cfg["quick_actions"], cfg["proxy_pool"], monitoring=enabled)
+    return bool(payload["monitoring"])
 
 
 def reset() -> bool:

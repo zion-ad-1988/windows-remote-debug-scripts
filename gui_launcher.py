@@ -34,6 +34,9 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ICON_PNG = os.path.join(SCRIPT_DIR, "computer_desk.png")
 APP_USER_MODEL_ID = "Nexus.Field.Deck.1"
 
+# 当前用户 Internet 设置注册表路径（清除代理时直接写入）
+REG_INTERNET = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+
 # 浅色工业精密风双主题调色板：与 testApp_gui 共用视觉令牌
 THEMES = {
     "light": {
@@ -574,6 +577,27 @@ class MiniLed(tk.Canvas):
                          font=("Segoe UI", 8, "bold"))
 
 
+def clear_system_proxy_registry() -> Optional[str]:
+    """关闭并清空当前用户的系统代理（守候未运行时使用）。
+
+    返回 None 表示成功，否则返回错误描述。守候脚本运行中不走这里，
+    由脚本自身清除以便其 5s 校验持续保持关闭状态。
+    """
+    try:
+        import winreg
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, REG_INTERNET, 0, winreg.KEY_SET_VALUE
+        ) as key:
+            winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 0)
+            winreg.SetValueEx(key, "ProxyServer", 0, winreg.REG_SZ, "")
+            winreg.SetValueEx(key, "ProxyOverride", 0, winreg.REG_SZ, "")
+        ctypes.windll.wininet.InternetSetOptionW(0, 39, 0, 0)
+        ctypes.windll.wininet.InternetSetOptionW(0, 37, 0, 0)
+        return None
+    except OSError as exc:
+        return str(exc)
+
+
 class ServicePanel(tk.Frame):
     """服务操控面板（丝印编号 + 模块标签 + 启停键组 + 指令芯片 + 终端缓冲区）"""
     def __init__(
@@ -588,6 +612,7 @@ class ServicePanel(tk.Frame):
         cmd_list: list[str],
         allow_input: bool = False,
         quick_actions: Optional[list[tuple[str, str | Callable[[], None]]]] = None,
+        fixed_actions: Optional[list[tuple[str, str | Callable[[], None]]]] = None,
         config_command: Optional[Callable[[], None]] = None,
         max_buffer_rows: int = 35,
         watchdog_seconds: int = 0,
@@ -610,6 +635,7 @@ class ServicePanel(tk.Frame):
         self.cmd_list = cmd_list
         self.allow_input = allow_input
         self.quick_actions = quick_actions or []
+        self.fixed_actions = fixed_actions or []
         self.config_command = config_command
         self.on_status_change = on_status_change
 
@@ -738,7 +764,7 @@ class ServicePanel(tk.Frame):
             self.btn_config.pack(side=tk.RIGHT, padx=(5, 0), pady=2)
             ToolTip(self.btn_config, "代理配置 · 快捷指令与脚本代理池")
 
-        if self.quick_actions:
+        if self.quick_actions or self.fixed_actions:
             self._build_chip_bar()
 
     def _build_chip_bar(self, before: Optional[tk.Widget] = None):
@@ -779,12 +805,29 @@ class ServicePanel(tk.Frame):
             ToolTip(b, "点击下发指令到服务终端")
             self.chips.append(b)
 
+        # 固定动作芯片：与可配置指令区分，使用警示色描边
+        for label, act in self.fixed_actions:
+            if callable(act):
+                cmd = act
+            else:
+                cmd = lambda v=act: self.send_input(v)
+            b = DeckButton(
+                self.chip_bar, label, command=cmd,
+                bg_color=THEME["bg_raise"], hover_color=THEME["line_strong"],
+                text_color=THEME["danger"], border_color=THEME["danger"],
+                font_style=("Segoe UI", 9, "bold"),
+                width=max(60, len(label) * 13 + 14), height=24, radius=4
+            )
+            b.pack(side=tk.LEFT, padx=(10, 0))
+            ToolTip(b, "清除系统代理，守候将保持关闭状态")
+            self.chips.append(b)
+
     def set_quick_actions(self, actions: list[tuple[str, str]]):
         """运行时替换指令芯片组（代理配置变更后调用）。"""
         self.quick_actions = list(actions or [])
         alive = hasattr(self, "chip_bar") and self.chip_bar.winfo_exists()
 
-        if not self.quick_actions:
+        if not self.quick_actions and not self.fixed_actions:
             if alive:
                 self.chip_bar.destroy()
             self.chips.clear()
@@ -1836,6 +1879,7 @@ class FieldDeckApp(tk.Tk):
             cmd_list=[sys.executable, "-u", "systemproxy_watcher.py"],
             allow_input=True,
             quick_actions=proxy_actions,
+            fixed_actions=[("清除代理", self.clear_proxy)],
             config_command=self.open_proxy_config,
             max_buffer_rows=32,
             on_status_change=self.update_services_summary
@@ -2041,6 +2085,30 @@ class FieldDeckApp(tk.Tk):
     def open_proxy_config(self):
         """打开代理配置台（模态）：编辑快捷指令与脚本代理池。"""
         ProxyConfigDialog(self, on_apply=self.apply_proxy_config)
+
+    def clear_proxy(self):
+        """清除系统代理。
+
+        守候运行中交由脚本处理——脚本会把"关闭"当作目标状态，每 5s 校验一次，
+        被其它程序重新开启时再次清除；服务未运行时由操控台直接重置注册表。
+        """
+        if self.panel_proxy.is_running:
+            self.panel_proxy.send_input("off")
+            return
+
+        err = clear_system_proxy_registry()
+        if err:
+            self.panel_proxy.append_log(f"› 清除系统代理失败：{err}\n")
+            return
+
+        try:
+            proxy_config.set_monitoring(False)
+        except Exception:
+            pass
+
+        self.panel_proxy.append_log(
+            "› 系统代理已清除（服务未运行，当前无持续校验；下次启动守候将保持关闭）\n"
+        )
 
     def apply_proxy_config(self, cfg: dict):
         """配置写入后刷新芯片组；守候脚本在运行中则按新代理池自动重启。"""

@@ -37,6 +37,11 @@ APP_USER_MODEL_ID = "Nexus.Field.Deck.1"
 # 当前用户 Internet 设置注册表路径（清除代理时直接写入）
 REG_INTERNET = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
 
+# 指令芯片尺寸：place 绝对定位，换行时按此计算行高与偏移
+CHIP_H = 24
+CHIP_GAP = 4
+CHIP_SPACING = 5
+
 # 浅色工业精密风双主题调色板：与 testApp_gui 共用视觉令牌
 THEMES = {
     "light": {
@@ -782,9 +787,11 @@ class ServicePanel(tk.Frame):
             self.chip_bar, text="CMD", font=("Segoe UI", 8, "bold"),
             fg=THEME["text_lo"], bg=THEME["bg_panel"]
         )
-        self._chip_rows: list[tk.Frame] = []
         self._chip_layout_sig = None
         self._chip_reflow_job = None
+        # 芯片用 place 绝对定位，容器高度需自行控制
+        self.chip_bar.pack_propagate(False)
+        self.chip_bar.configure(height=CHIP_H)
         self.chip_bar.bind("<Configure>", self._on_chip_bar_configure, add="+")
         self._spawn_chips()
 
@@ -801,7 +808,11 @@ class ServicePanel(tk.Frame):
             self._chip_reflow_job = None
 
     def _reflow_chips(self, force: bool = False):
-        """把芯片按当前可用宽度分行排布，保证全部可见。"""
+        """把芯片按当前可用宽度分行摆放，保证全部可见。
+
+        使用 place 绝对定位而非嵌套 Frame：Tk 的 pack(in_=...) 只改变几何管理容器，
+        不改变父窗口，后创建的行 Frame 会以 Z 序盖住芯片。
+        """
         self._chip_reflow_job = None
         if getattr(self, "_closing", False) or not self.chips:
             return
@@ -813,38 +824,43 @@ class ServicePanel(tk.Frame):
             # 首帧尚未完成布局：先按单行放置，待 Configure 事件再分行
             avail = 100000
 
+        cmd_w = self.cmd_tag.winfo_reqwidth() + 7
         groups: list[list[tk.Widget]] = []
         cur: list[tk.Widget] = []
-        used = self.cmd_tag.winfo_reqwidth() + 7
+        used = cmd_w
         for chip in self.chips:
-            need = chip.w + 5
+            gap = getattr(chip, "gap_left", CHIP_SPACING) if cur else 0
+            need = gap + chip.w + CHIP_SPACING
             if cur and used + need > avail:
                 groups.append(cur)
                 cur, used = [], 0
+                need = chip.w + CHIP_SPACING
             cur.append(chip)
             used += need
         if cur:
             groups.append(cur)
 
         sig = (avail, tuple(len(g) for g in groups))
-        if not force and sig == self._chip_layout_sig and self._chip_rows:
+        if not force and sig == self._chip_layout_sig:
             return
         self._chip_layout_sig = sig
 
-        for row in self._chip_rows:
-            row.destroy()
-        self._chip_rows = []
+        rows = len(groups)
+        height = rows * CHIP_H + (rows - 1) * CHIP_GAP
+        self.chip_bar.configure(height=height)
 
+        y = 0
         for index, group in enumerate(groups):
-            row = tk.Frame(self.chip_bar, bg=THEME["bg_panel"])
-            row.pack(fill=tk.X, pady=(0, 0 if index == len(groups) - 1 else 4))
-            self._chip_rows.append(row)
-
+            x = 0
             if index == 0:
-                self.cmd_tag.pack(in_=row, side=tk.LEFT, padx=(0, 7))
+                self.cmd_tag.place(x=0, y=y + 2)
+                x = cmd_w
             for pos, chip in enumerate(group):
-                left_pad = 0 if pos == 0 else getattr(chip, "gap_left", 5)
-                chip.pack(in_=row, side=tk.LEFT, padx=(left_pad, 5))
+                if pos:
+                    x += getattr(chip, "gap_left", CHIP_SPACING)
+                chip.place(x=x, y=y, width=chip.w, height=CHIP_H)
+                x += chip.w + CHIP_SPACING
+            y += CHIP_H + CHIP_GAP
 
     def _spawn_chips(self):
         """按当前 quick_actions / fixed_actions 重建芯片按钮（保留 CMD 标签）。"""
@@ -852,7 +868,6 @@ class ServicePanel(tk.Frame):
             if child is not getattr(self, "cmd_tag", None):
                 child.destroy()
         self.chips.clear()
-        self._chip_rows = []
 
         for label, act in self.quick_actions:
             if callable(act):
@@ -1035,8 +1050,6 @@ class ServicePanel(tk.Frame):
         if getattr(self, "chip_bar", None) is not None and self.chip_bar.winfo_exists():
             self.chip_bar.configure(bg=THEME["bg_panel"])
             self.cmd_tag.configure(bg=THEME["bg_panel"], fg=THEME["text_lo"])
-            for row in getattr(self, "_chip_rows", []):
-                row.configure(bg=THEME["bg_panel"])
             for c in self.chips:
                 if getattr(c, "is_fixed", False):
                     c.update_style(THEME["bg_raise"], THEME["line_strong"],
